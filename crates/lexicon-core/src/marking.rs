@@ -289,14 +289,12 @@ impl Marking {
         }
     }
 
-    /// Fold the aggregate over a set of markings.
     pub fn aggregate(markings: impl IntoIterator<Item = Marking>) -> Marking {
         markings
             .into_iter()
             .fold(Marking::default(), |acc, m| acc.max(&m))
     }
 
-    /// Non-standard caveats (Other). Never silent — caller must surface these.
     pub fn warnings(&self) -> Vec<String> {
         self.caveats
             .iter()
@@ -313,6 +311,20 @@ impl Marking {
         s: &str,
         sci: &SciRegister,
         countries: &CountryRegister,
+    ) -> Result<Self, String> {
+        Self::parse_inner(s, Some(sci), Some(countries))
+    }
+
+    /// Rows already on the ledger. Mint-time register does not apply —
+    /// a later sci_register must not make `ledger verify` fail.
+    pub fn from_stored(s: &str) -> Result<Self, String> {
+        Self::parse_inner(s, None, None)
+    }
+
+    fn parse_inner(
+        s: &str,
+        sci: Option<&SciRegister>,
+        countries: Option<&CountryRegister>,
     ) -> Result<Self, String> {
         let s = s.trim();
         if s.is_empty() {
@@ -341,25 +353,31 @@ impl Marking {
                 "unknown CAPCO token '{seg}'; supported: NOFORN, ORCON, FISA, RSEN, HVSACO, REL TO <ISO 3166-1 alpha-3>, SCI/<dg>, SAP/<dg>, RD-FRD, CNWDI"
             ));
         }
-        for c in &compartments {
-            if !sci.allows(&c.kind, &c.designator) {
-                let kind = c.kind.display();
-                return Err(format!(
-                    "unknown {kind} designator '{}'; not in sci_register",
-                    c.designator
-                ));
+        if let Some(sci) = sci {
+            for c in &compartments {
+                if !sci.allows(&c.kind, &c.designator) {
+                    let kind = c.kind.display();
+                    return Err(format!(
+                        "unknown {kind} designator '{}'; not in sci_register",
+                        c.designator
+                    ));
+                }
             }
         }
-        for c in &caveats {
-            if let Caveat::RelTo { countries: list } = c {
-                if list.is_empty() {
-                    return Err("REL TO requires at least one ISO 3166-1 alpha-3 country".into());
-                }
-                for code in list {
-                    if !countries.contains(code) {
-                        return Err(format!(
-                            "unknown REL TO country '{code}'; not ISO 3166-1 alpha-3 or a recognized collective"
-                        ));
+        if let Some(countries) = countries {
+            for c in &caveats {
+                if let Caveat::RelTo { countries: list } = c {
+                    if list.is_empty() {
+                        return Err(
+                            "REL TO requires at least one ISO 3166-1 alpha-3 country".into()
+                        );
+                    }
+                    for code in list {
+                        if !countries.contains(code) {
+                            return Err(format!(
+                                "unknown REL TO country '{code}'; not ISO 3166-1 alpha-3 or a recognized collective"
+                            ));
+                        }
                     }
                 }
             }
@@ -415,7 +433,6 @@ impl std::str::FromStr for Marking {
 fn parse_compartment(seg: &str) -> Option<(CompartmentKind, Vec<String>)> {
     if let Some((kind, dg)) = seg.split_once('/') {
         let kind = CompartmentKind::parse(kind)?;
-        // SCI/TK,HCS is two SCI compartments, not one "TK,HCS" designator.
         let dgs: Vec<String> = dg
             .split(',')
             .map(|d| d.trim().to_ascii_uppercase())
@@ -521,6 +538,9 @@ mod tests {
         let err = "TS//SCI/ZZZZ".parse::<Marking>().unwrap_err();
         assert!(err.contains("ZZZZ"), "{err}");
         assert!("TS//SCI/TK,ZZZZ".parse::<Marking>().is_err());
+        let stored = Marking::from_stored("TS//SCI/ZZZZ").unwrap();
+        assert_eq!(stored.level, Level::TopSecret);
+        assert_eq!(stored.compartments[0].designator, "ZZZZ");
     }
 
     #[test]

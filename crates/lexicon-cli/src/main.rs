@@ -533,8 +533,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let want: lexicon_core::marking::Marking =
                         m.parse().map_err(|e| format!("bad --marking: {e}"))?;
                     recs.retain(|r| {
-                        r.marking
-                            .parse::<lexicon_core::marking::Marking>()
+                        lexicon_core::marking::Marking::from_stored(&r.marking)
                             .is_ok_and(|rm| rm == want)
                     });
                 }
@@ -608,8 +607,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let want: lexicon_core::marking::Marking =
                         m.parse().map_err(|e| format!("bad --marking: {e}"))?;
                     recs.retain(|r| {
-                        r.marking
-                            .parse::<lexicon_core::marking::Marking>()
+                        lexicon_core::marking::Marking::from_stored(&r.marking)
                             .is_ok_and(|rm| rm == want)
                     });
                 }
@@ -970,7 +968,7 @@ fn sample(words: &[String]) -> String {
 fn page_marking(recs: &[lexicon_core::NameRecord], floor: Option<&str>) -> String {
     let mut agg = lexicon_core::marking::Marking::default();
     for r in recs {
-        if let Ok(m) = r.marking.parse::<lexicon_core::marking::Marking>() {
+        if let Ok(m) = lexicon_core::marking::Marking::from_stored(&r.marking) {
             agg = agg.max(&m);
         }
     }

@@ -458,8 +458,7 @@ impl Ledger {
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         let mut agg = crate::marking::Marking::default();
         for r in rows {
-            let m: crate::marking::Marking = r?
-                .parse()
+            let m = crate::marking::Marking::from_stored(&r?)
                 .map_err(|e| crate::error::Error::LedgerCorrupt(format!("bad marking: {e}")))?;
             agg = agg.max(&m);
         }
@@ -692,5 +691,31 @@ mod tests {
             Err(e) => panic!("wrong error: {e}"),
             Ok(_) => panic!("stale binary must refuse a newer schema"),
         }
+    }
+
+    #[test]
+    fn aggregate_keeps_pre_register_sci() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        let marking = crate::marking::Marking::from_stored("TS//SCI/ZZZZ").unwrap();
+        led.append(
+            Event::new(EventKind::Issued {
+                name: "FAKE SCI".into(),
+                name_type: NameType::Nickname,
+                authority_id: "DIA".into(),
+                authority_pk: hex::encode(auth.public_key()),
+                pool_id: "p".into(),
+                sequence: 1,
+                nonce: 0,
+                vrf_proof: "00".into(),
+                vrf_output: "00".into(),
+                indices: vec![1, 2],
+                marking,
+            }),
+            &auth,
+        )
+        .unwrap();
+        let agg = led.aggregate_marking().unwrap();
+        assert_eq!(agg.to_string(), "TS//SCI/ZZZZ");
     }
 }
