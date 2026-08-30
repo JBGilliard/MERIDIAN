@@ -58,7 +58,7 @@ CLASSIFICATION: TS//SCI//TK
 
 `--classification <m>` is a floor, not a filter. It can raise the banner (add a caveat by policy) but cannot lower it below the content max.
 
-`ledger verify` shows the ledger's aggregate marking: the max of every name in the ledger. If the ledger holds one `TS//SCI` name, the ledger file is `TS//SCI`. This is derived, not stored.
+`ledger verify` shows the ledger's aggregate marking: the max of every name in the ledger. If the ledger holds one `TS//SCI` name, the ledger file is `TS//SCI`.
 
 ```
 lexicon ledger names                      # banners + per-name marking
@@ -131,6 +131,8 @@ lexicon pool reject remove --set historical --token TICTAC
 ```
 
 Reject sets: `historical`, `military`. Agency `digraphs` are empty for non-CIA agencies. Cryptonym is a CIA convention.
+
+The `historical` set holds real loaded codenames the tool refuses to mint — `OXCART`, `HAVE BLUE`, `MKULTRA`, `CORONA`, `STARGATE`, and the rest. The system's memory of IC nomenclature is encoded as what it won't mint. (Have Blue was the Lockheed Skunk Works stealth demonstrator at Groom Lake that led to the F-117.)
 
 ## What this is not
 

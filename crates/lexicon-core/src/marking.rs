@@ -1,11 +1,6 @@
-//! CAPCO-ish classification marking. Typed, not a free-form string.
-//!
-//! Scope is the 80% case: `LEVEL//CAVEAT//COMPARTMENT[/DESIGNATOR]`.
-//! Unknown tokens are rejected at the CLI with a clear error; the `Other`
-//! escape hatches exist so the schema doesn't break when new tokens arrive.
-//! A `Marking` is metadata about a name, travels with the `Issued` event,
-//! and is signed and hashed into the chain. The ledger container stays
-//! unclassified.
+//! CAPCO classification marking. Typed, not a free-form string.
+//! Travels with the `Issued` event (signed, hashed). The ledger
+//! container stays unclassified; the marking is name metadata.
 
 use serde::{Deserialize, Serialize};
 
@@ -161,8 +156,7 @@ pub struct Marking {
 }
 
 impl Marking {
-    /// Canonical bytes for the Merkle-bound `canonical_bytes` path.
-    /// Fixed order: level, caveats (sorted), compartments (sorted).
+    /// Canonical bytes: level, caveats (sorted), compartments (sorted).
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.push(self.level.as_u8());
@@ -186,10 +180,8 @@ impl Marking {
         out
     }
 
-    /// The container marking: the higher level, with caveats and
-    /// compartments unioned (superset). `max(TS//SCI/TK, CUI) = TS//SCI/TK`.
-    /// This is "upgraded by aggregation" — a container's marking is the
-    /// maximum of its contents.
+    /// Container marking: higher level, caveats and compartments unioned.
+    /// `max(TS//SCI/TK, CUI) = TS//SCI/TK` — upgraded by aggregation.
     pub fn max(&self, other: &Marking) -> Marking {
         let level = self.level.max(other.level);
         let mut caveats = self.caveats.clone();
@@ -211,7 +203,7 @@ impl Marking {
         }
     }
 
-    /// Fold the aggregate marking over a set of markings.
+    /// Fold the aggregate over a set of markings.
     pub fn aggregate(markings: impl IntoIterator<Item = Marking>) -> Marking {
         markings
             .into_iter()
@@ -225,11 +217,26 @@ impl std::fmt::Display for Marking {
         for c in &self.caveats {
             parts.push(c.display());
         }
+        // CAPCO: same-kind designators comma-separated under one prefix
+        // (SCI/TK,HCS), not repeated per subcompartment.
+        let mut by_kind: Vec<(CompartmentKind, Vec<String>)> = Vec::new();
         for c in &self.compartments {
-            if c.designator.is_empty() {
-                parts.push(c.kind.display().to_string());
+            if let Some(entry) = by_kind.iter_mut().find(|(k, _)| *k == c.kind) {
+                entry.1.push(c.designator.clone());
             } else {
-                parts.push(format!("{}/{}", c.kind.display(), c.designator));
+                by_kind.push((c.kind.clone(), vec![c.designator.clone()]));
+            }
+        }
+        for (kind, dgs) in &by_kind {
+            let nonempty: Vec<&str> = dgs
+                .iter()
+                .filter(|d| !d.is_empty())
+                .map(String::as_str)
+                .collect();
+            if nonempty.is_empty() {
+                parts.push(kind.display().to_string());
+            } else {
+                parts.push(format!("{}/{}", kind.display(), nonempty.join(",")));
             }
         }
         write!(f, "{}", parts.join("//"))
@@ -254,11 +261,13 @@ impl std::str::FromStr for Marking {
                 caveats.push(c);
                 continue;
             }
-            if let Some((kind, dg)) = parse_compartment(seg) {
-                compartments.push(Compartment {
-                    kind,
-                    designator: dg,
-                });
+            if let Some((kind, dgs)) = parse_compartment(seg) {
+                for dg in dgs {
+                    compartments.push(Compartment {
+                        kind: kind.clone(),
+                        designator: dg,
+                    });
+                }
                 continue;
             }
             return Err(format!(
@@ -273,13 +282,22 @@ impl std::str::FromStr for Marking {
     }
 }
 
-fn parse_compartment(seg: &str) -> Option<(CompartmentKind, String)> {
+fn parse_compartment(seg: &str) -> Option<(CompartmentKind, Vec<String>)> {
     if let Some((kind, dg)) = seg.split_once('/') {
         let kind = CompartmentKind::parse(kind)?;
-        return Some((kind, dg.trim().to_ascii_uppercase()));
+        // SCI/TK,HCS is two SCI compartments, not one "TK,HCS" designator.
+        let dgs: Vec<String> = dg
+            .split(',')
+            .map(|d| d.trim().to_ascii_uppercase())
+            .filter(|d| !d.is_empty())
+            .collect();
+        if dgs.is_empty() {
+            return None;
+        }
+        return Some((kind, dgs));
     }
     if let Some(kind) = CompartmentKind::parse(seg) {
-        return Some((kind, String::new()));
+        return Some((kind, vec![String::new()]));
     }
     None
 }
@@ -369,5 +387,25 @@ mod tests {
         // Aggregate folds.
         let agg = Marking::aggregate([cui, s_noforn, ts]);
         assert_eq!(agg, m);
+    }
+
+    #[test]
+    fn comma_separated_compartments() {
+        // CAPCO: one SCI prefix, comma-separated designators.
+        let m: Marking = "TS//SCI/TK,HCS".parse().unwrap();
+        assert_eq!(m.compartments.len(), 2);
+        assert!(m.compartments.contains(&Compartment {
+            kind: CompartmentKind::Sci,
+            designator: "TK".into()
+        }));
+        assert!(m.compartments.contains(&Compartment {
+            kind: CompartmentKind::Sci,
+            designator: "HCS".into()
+        }));
+        assert_eq!(m.to_string(), "TS//SCI/TK,HCS");
+        // Aggregate of TK and HCS produces the comma form, not SCI/TK//SCI/HCS.
+        let tk: Marking = "TS//SCI/TK".parse().unwrap();
+        let hcs: Marking = "TS//SCI/HCS".parse().unwrap();
+        assert_eq!(tk.max(&hcs).to_string(), "TS//SCI/TK,HCS");
     }
 }

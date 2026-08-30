@@ -25,7 +25,7 @@ pub use linter::{LintEngine, LintHit, LintRule, LintSeverity, NameCandidate, Rej
 pub use merkle::InclusionProof;
 pub use mint::{verify_issued, verify_mint, MintRequest, MintedName, Minter};
 pub use pool::{Pool, PoolSet};
-pub use sig::{SigAlg, Signature, Signer};
+pub use sig::{MlDsaSigner, SigAlg, Signature, Signer};
 pub use types::{NameType, POOL_ID, POOL_ID_V1};
 pub use vrf::{prove, verify, VrfOutput, VrfProof, PROOF_LEN, SUITE_STRING};
 

@@ -18,6 +18,14 @@ hex.workspace = true
 rusqlite.workspace = true
 zeroize.workspace = true
 time.workspace = true
+ml-dsa = { version = "0.1.1", optional = true }
+
+[features]
+default = []
+# ML-DSA (FIPS 204) event signatures. Off by default so a plain
+# `cargo build` stays Ed25519-only; `cargo build --features pq`
+# enables ML-DSA-65 signing and verification.
+pq = ["ml-dsa"]
 
 [dev-dependencies]
 proptest = "1.6"

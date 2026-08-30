@@ -10,10 +10,9 @@ use serde::{Deserialize, Serialize};
 pub enum SigAlg {
     #[default]
     Ed25519 = 1,
-    /// FIPS 204 ML-DSA-65. Reserved: not implemented in the OSS build.
-    /// A ledger carrying ML-DSA signatures can still be read (canonical +
-    /// Merkle verify) but signature verification returns `UnsupportedAlg`
-    /// until a PQ-enabled build is linked.
+    /// FIPS 204 ML-DSA-65. Reserved: not in the OSS build; a ledger
+    /// carrying it reads (canonical + Merkle) but verify returns
+    /// `UnsupportedAlg` until a PQ build is linked.
     MlDsa65 = 2,
 }
 
@@ -45,20 +44,15 @@ pub struct SigPart {
     pub bytes: Vec<u8>,
 }
 
-/// Algorithm-tagged signature. Wire format:
-/// `[count: u8][part: alg_u8, len_u16_le, sig_bytes]...`
-///
-/// One part today; a list enables hybrid (same key, two algorithms) and
-/// two-person control (two keys, one part each) without a ledger-format
-/// break — the signature blob is not part of `canonical` and is not
-/// hashed into the Merkle tree.
+/// Algorithm-tagged signature. Wire: `[count: u8][alg_u8, len_u16_le, bytes]...`
+/// One part today; a list enables hybrid and two-person control without
+/// a ledger-format break - the blob is not `canonical`, not Merkle-hashed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signature {
     pub parts: Vec<SigPart>,
 }
 
 impl Signature {
-    /// Single-part signature (the common case).
     pub fn new(alg: SigAlg, bytes: impl Into<Vec<u8>>) -> Self {
         Self {
             parts: vec![SigPart {
@@ -68,16 +62,12 @@ impl Signature {
         }
     }
 
-    /// Combine independently-produced parts into one signature. Used for
-    /// two-person control: each authority signs the canonical bytes and
-    /// the parts are joined.
     pub fn from_parts(parts: Vec<SigPart>) -> Self {
         Self { parts }
     }
 
-    /// Flatten a list of (single-part) signatures into one multi-part
-    /// signature. The two-person-control path: each authority produces a
-    /// one-part `Signature`; `join` merges them into a single event signature.
+    /// Flatten N single-part signatures into one multi-part signature
+    /// (two-person control: each authority signs, then join).
     pub fn join(signatures: Vec<Signature>) -> Self {
         let mut parts = Vec::new();
         for s in signatures {
@@ -131,13 +121,42 @@ pub trait Signer {
     fn sign(&self, msg: &[u8]) -> Signature;
 }
 
-/// Verify every part of `sig` against the supplied public keys. Each part
-/// must verify under exactly one pk in `pks`, and each pk may be used at most
-/// once — so a two-part signature requires two distinct pks. This is the
-/// two-person control policy: a `KeyRotated` or `Revoked` event signed by
-/// two authorities cannot be verified by a single key.
-///
-/// For a single-part signature (the common case) pass one pk.
+#[cfg(feature = "pq")]
+pub struct MlDsaSigner {
+    sk: ml_dsa::SigningKey<ml_dsa::MlDsa65>,
+}
+
+#[cfg(feature = "pq")]
+impl MlDsaSigner {
+    pub fn generate() -> Self {
+        use ml_dsa::{Generate, SigningKey};
+        Self {
+            sk: SigningKey::<ml_dsa::MlDsa65>::generate(),
+        }
+    }
+
+    pub fn public_key_bytes(&self) -> Vec<u8> {
+        use ml_dsa::{Keypair, KeyExport};
+        self.sk.verifying_key().to_bytes().to_vec()
+    }
+}
+
+#[cfg(feature = "pq")]
+impl Signer for MlDsaSigner {
+    fn alg(&self) -> SigAlg {
+        SigAlg::MlDsa65
+    }
+
+    fn sign(&self, msg: &[u8]) -> Signature {
+        use ml_dsa::{Signer as _, SignatureEncoding};
+        let sig: ml_dsa::Signature<ml_dsa::MlDsa65> = self.sk.sign(msg);
+        Signature::new(SigAlg::MlDsa65, sig.to_bytes().to_vec())
+    }
+}
+
+/// Verify every part of `sig` against `pks`. Each part must verify
+/// under exactly one pk, and each pk is used at most once — a two-part
+/// signature requires two distinct pks (two-person control).
 pub fn verify(pks: &[&[u8]], msg: &[u8], sig: &Signature) -> Result<()> {
     if sig.parts.is_empty() {
         return Err(Error::BadSignature);
@@ -147,9 +166,7 @@ pub fn verify(pks: &[&[u8]], msg: &[u8], sig: &Signature) -> Result<()> {
     }
     let mut used = vec![false; pks.len()];
     for part in &sig.parts {
-        // Unsupported algorithm is a build/config error, not a bad signature.
-        // Surface it distinctly so an auditor knows the ledger is readable
-        // but this signature can't be checked in this binary.
+        // Build/config error, not a bad signature: surface distinctly.
         if part.alg == SigAlg::MlDsa65 {
             return Err(Error::UnsupportedAlg(part.alg.as_str().into()));
         }
@@ -182,8 +199,31 @@ fn verify_part(alg: SigAlg, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
             let s = EdSig::from_bytes(&s64);
             vk.verify(msg, &s).map_err(|_| Error::BadSignature)
         }
-        SigAlg::MlDsa65 => Err(Error::UnsupportedAlg(alg.as_str().into())),
+        SigAlg::MlDsa65 => verify_mldsa(pk, msg, sig),
     }
+}
+
+#[cfg(feature = "pq")]
+fn verify_mldsa(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
+    use ml_dsa::{MlDsa65, Verifier};
+    const PK_LEN: usize = 1952;
+    const SIG_LEN: usize = 3309;
+    let pk_arr: [u8; PK_LEN] = pk
+        .try_into()
+        .map_err(|_| Error::Key(format!("ml-dsa-65 pk must be {PK_LEN} bytes")))?;
+    let enc_pk: ml_dsa::EncodedVerifyingKey<MlDsa65> = pk_arr.into();
+    let vk = ml_dsa::VerifyingKey::<MlDsa65>::decode(&enc_pk);
+    let sig_arr: [u8; SIG_LEN] = sig
+        .try_into()
+        .map_err(|_| Error::BadSignature)?;
+    let enc_sig: ml_dsa::EncodedSignature<MlDsa65> = sig_arr.into();
+    let s = ml_dsa::Signature::<MlDsa65>::decode(&enc_sig).ok_or(Error::BadSignature)?;
+    vk.verify(msg, &s).map_err(|_| Error::BadSignature)
+}
+
+#[cfg(not(feature = "pq"))]
+fn verify_mldsa(_pk: &[u8], _msg: &[u8], _sig: &[u8]) -> Result<()> {
+    Err(Error::UnsupportedAlg("ml-dsa-65"))
 }
 
 #[cfg(test)]
@@ -283,5 +323,16 @@ mod tests {
         let sig = Signature::new(SigAlg::MlDsa65, vec![0u8; 3300]);
         let err = verify(&[&[0u8; 32]], b"msg", &sig).unwrap_err();
         assert!(matches!(err, Error::UnsupportedAlg(_)));
+    }
+
+    #[cfg(feature = "pq")]
+    #[test]
+    fn ml_dsa_signs_and_verifies() {
+        let signer = MlDsaSigner::generate();
+        let pk = signer.public_key_bytes();
+        let sig = signer.sign(b"msg");
+        assert_eq!(sig.alg, SigAlg::MlDsa65);
+        assert!(verify(&[&pk], b"msg", &sig).is_ok());
+        assert!(verify(&[&pk], b"tampered", &sig).is_err());
     }
 }

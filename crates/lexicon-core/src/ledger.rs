@@ -84,15 +84,11 @@ impl Ledger {
     }
 
     /// Forward-only schema migration. `PRAGMA user_version` tracks the
-    /// schema version; each step ALTERs an old DB up to the next version.
-    /// A 50-year ledger must survive a binary upgrade without a
-    /// manual `rm .meridian/ledger.sqlite`, so this is the one place
-    /// where the schema is allowed to change.
+    /// schema version; each step ALTERs an old DB up. The one place
+    /// the schema is allowed to change.
     fn migrate(&self) -> Result<()> {
-        // v0 (or no version yet): add the `marking` column to `names`.
-        // CREATE TABLE IF NOT EXISTS does not add columns to an
-        // existing table, so an old ledger opened by a new binary needs
-        // an explicit ALTER.
+        // v0: add the `marking` column. CREATE TABLE IF NOT EXISTS
+        // does not add columns to an existing table, so ALTER explicitly.
         let current: i64 = self
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -101,8 +97,7 @@ impl Ledger {
                 .conn
                 .prepare("SELECT * FROM names LIMIT 0")?
                 .column_names()
-                .iter()
-                .any(|n| *n == "marking");
+                .contains(&"marking");
             if !has_col {
                 self.conn.execute(
                     "ALTER TABLE names ADD COLUMN marking TEXT NOT NULL DEFAULT 'U'",
@@ -149,17 +144,17 @@ impl Ledger {
         Ok(self.name_status(name)?.is_some())
     }
 
-    /// Append an event signed by a single authority (the common case).
+    /// Append an event signed by a single authority.
     pub fn append(&mut self, event: Event, authority: &Authority) -> Result<u64> {
         let canonical = event.canonical_bytes();
         let sig = authority.sign(&canonical);
         self.append_with(event, sig)
     }
 
-    /// Append an event with a pre-built (possibly multi-part) signature.
-    /// Used for two-person control: the caller builds a signature from two
-    /// authorities and passes it here. The signature blob is stored as-is;
-    /// it is not part of `canonical` and not hashed into the Merkle tree.
+    /// Append with a pre-built (possibly multi-part) signature.
+    /// Two-person control: the caller builds a multi-part sig and
+    /// passes it here. The blob is stored as-is; it is not
+    /// `canonical`, not Merkle-hashed.
     pub fn append_with(&mut self, event: Event, sig: Signature) -> Result<u64> {
         let canonical = event.canonical_bytes();
         let hash = event.hash();
@@ -328,10 +323,8 @@ impl Ledger {
         Ok(())
     }
 
-    /// Verify the signature(s) on one event against a set of public keys.
-    /// A single-part event verifies against one pk; a two-part event
-    /// (two-person control) requires two distinct pks. Pass the keys the
-    /// auditor trusts for this authority and its co-authorizers.
+    /// Verify event signature(s) against `pks`. A two-part event
+    /// (two-person control) requires two distinct pks.
     pub fn verify_event_signature(&self, seq: u64, pks: &[&[u8]]) -> Result<()> {
         let (canonical, sig): (Vec<u8>, Vec<u8>) = self.conn.query_row(
             "SELECT canonical, signature FROM events WHERE seq = ?1",
@@ -354,8 +347,7 @@ impl Ledger {
         Ok(out)
     }
 
-    /// One name's full record, or None if unknown. Joins to events for the
-    /// mint/retire/revoke timestamp.
+    /// One name's full record, or None if unknown.
     pub fn lookup(&self, name: &str) -> Result<Option<NameRecord>> {
         let key = normalize(name);
         let row = self
@@ -380,8 +372,8 @@ impl Ledger {
         Ok(row)
     }
 
-    /// Every name record, ordered by issue seq. The CLI filters in Rust;
-    /// the names table is small and this keeps SQL out of the trust path.
+    /// Every name record, ordered by issue seq. The CLI filters
+    /// in Rust — keeps SQL out of the trust path.
     pub fn name_records(&self) -> Result<Vec<NameRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
@@ -405,8 +397,8 @@ impl Ledger {
         Ok(out)
     }
 
-    /// Raw event rows for offline audit / export. Includes canonical, hash, and
-    /// signature so an auditor re-verifies without this binary.
+    /// Raw event rows for offline audit. Includes canonical,
+    /// hash, signature — an auditor re-verifies without this binary.
     pub fn event_rows(&self) -> Result<Vec<EventRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT e.seq, e.event_type, e.created_at, n.display, n.marking, e.canonical, e.event_hash, e.signature FROM events e LEFT JOIN names n ON n.event_seq = e.seq ORDER BY e.seq",
@@ -430,10 +422,8 @@ impl Ledger {
         Ok(out)
     }
 
-    /// The container marking of the ledger: the max of every name's
-    /// marking. If even one name is TS//SCI, the ledger is TS//SCI.
-    /// Derived, not stored — the ledger is unclassified-by-design; the
-    /// aggregate is computed from the `names` table.
+    /// Container marking of the ledger: max of every name's
+    /// marking. Derived, not stored.
     pub fn aggregate_marking(&self) -> Result<crate::marking::Marking> {
         let mut stmt = self.conn.prepare("SELECT marking FROM names")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;

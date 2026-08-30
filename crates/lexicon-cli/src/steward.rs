@@ -1,9 +1,7 @@
-//! Steward CRUD over the source data files (agencies.json, reject lists).
-//!
-//! These commands edit the source tree, not the running binary's bundled
-//! pools (those are `include_str!`'d at build time). A steward who adds an
-//! agency or a reject token here must rebuild and bump `POOL_ID` to ship the
-//! change. The commands say so in their output.
+//! Steward CRUD over source data files (agencies.json, reject lists).
+//! Edits the source tree, not the running binary's bundled pools
+//! (`include_str!` at build time). A steward must rebuild and bump
+//! `POOL_ID` to ship a change.
 
 use serde::{Deserialize, Serialize};
 use std::fs;

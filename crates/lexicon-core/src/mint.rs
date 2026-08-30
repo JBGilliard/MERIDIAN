@@ -116,8 +116,7 @@ impl Minter<'_> {
 
             if let Some(status) = self.ledger.name_status(&name)? {
                 // Surface the winner's marking so a CUI operator colliding
-                // with a TS//SCI name sees it and stops, rather than
-                // re-rolling blind.
+                // with a TS//SCI name stops instead of re-rolling blind.
                 let held_marking = self
                     .ledger
                     .lookup(&name)?

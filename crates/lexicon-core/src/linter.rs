@@ -92,8 +92,8 @@ impl LintEngine {
         })
     }
 
-    /// Append a rule at runtime. Used by pools to feed bundled data lists
-    /// (e.g. historical-cryptonym reject set) without core hardcoding them.
+    /// Append a rule at runtime. Lets pools feed bundled
+    /// data lists without core hardcoding them.
     pub fn push_rule(&mut self, rule: Box<dyn LintRule>) {
         self.rules.push(rule);
     }
@@ -386,10 +386,9 @@ impl LintRule for Janap119Rule {
     }
 }
 
-/// Generic data-driven reject list. Matches any token or the compacted name
-/// against a HashSet — same shape as Janap119Rule, minus the digraph columns.
-/// Lets pools ship curated reject sets (historical cryptonyms, codenames)
-/// without core hardcoding them.
+/// Generic data-driven reject list. Same shape as `Janap119Rule`
+/// minus the digraph columns — lets pools ship curated reject sets
+/// (historical cryptonyms, codenames) without core hardcoding them.
 pub struct RejectListRule {
     rule_name: &'static str,
     words: HashSet<String>,

@@ -330,9 +330,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let canonical = event.canonical_bytes();
                 let mut led = open_ledger(&cli.data_dir)?;
                 let seq = if let Some(co) = &co_author {
-                    // Two-person control: the old authority and a second
-                    // authorizer both sign the rotation. The ledger records a
-                    // two-part signature; verification needs both public keys.
                     let co_agency = co.to_ascii_uppercase();
                     let co_auth = load_auth(&cli.data_dir, &co_agency)?;
                     let sig = lexicon_core::Signature::join(vec![
@@ -343,9 +340,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } else {
                     led.append(event, &old)?
                 };
-                // Only persist the new seed after the rotation event is durably
-                // on the ledger. A crash before this line leaves the old key
-                // active and the rotation unrecorded — recoverable.
+                // Persist the new seed only after the rotation event is on the
+                // ledger. A crash here leaves the old key active and the
+                // rotation unrecorded — recoverable, no split-brain.
                 new.save(&keys_dir(&cli.data_dir))?;
                 if ui.is_json() {
                     ui.json(&serde_json::json!({
@@ -583,8 +580,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     recs.retain(|r| r.status.eq_ignore_ascii_case(s));
                 }
                 if let Some(m) = &marking {
-                    // Spillage guard: a CUI-only workstation filters to CUI
-                    // and never materializes a TS name into its logs.
+                    // Spillage guard: filter to one marking so a CUI-only
+                    // workstation never materializes a TS name into its logs.
                     let want: lexicon_core::marking::Marking =
                         m.parse().map_err(|e| format!("bad --marking: {e}"))?;
                     recs.retain(|r| {
@@ -611,8 +608,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             LedgerCmd::Export { file } => {
                 let led = open_ledger(&cli.data_dir)?;
                 let rows = led.event_rows()?;
-                // Container marking = max of exported event markings, floored by
-                // --classification. Each row carries its own marking too.
+                // Container marking = max of exported event markings,
+                // floored by --classification.
                 let mut agg = lexicon_core::marking::Marking::default();
                 for r in &rows {
                     if let Some(m) = r.marking.as_deref() {

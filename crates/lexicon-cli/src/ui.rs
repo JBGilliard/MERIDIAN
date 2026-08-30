@@ -76,9 +76,8 @@ impl Ui {
         }
     }
 
-    /// Top classification banner + separator. CAPCO contention: every
-    /// classified page carries the marking at the top. The banner is
-    /// color-coded by level (DoD color conventions).
+    /// Top classification banner + separator (CAPCO: every
+    /// classified page carries the marking at the top).
     pub fn banner_top(&self, marking: &str) {
         if self.json {
             return;
@@ -120,8 +119,8 @@ impl Ui {
         format!("\x1b[{code}m{text}\x1b[0m")
     }
 
-    /// 24-bit truecolor paint. Used for the classification banner,
-    /// which has exact DoD hex codes (not the 256-color palette).
+    /// 24-bit truecolor. Used for the banner (exact DoD hex codes,
+    /// not the 256-color palette).
     fn paint_rgb(&self, rgb: (u8, u8, u8), text: &str) -> String {
         if !self.color {
             return text.to_string();
@@ -138,8 +137,7 @@ enum Color {
     Dim,
 }
 
-// DoD/IC classification banner colors. (r, g, b) from the official hex codes.
-// TS//SCI gets its own color; other compartments fall back to the level color.
+// DoD/IC banner colors (r, g, b) from the official hex codes.
 fn marking_color(marking: &str) -> (u8, u8, u8) {
     let level = marking
         .split("//")
@@ -161,8 +159,8 @@ fn marking_color(marking: &str) -> (u8, u8, u8) {
     }
 }
 
-// Color only on a real tty and when NO_COLOR is unset. CI pipes stdout, so
-// this stays plain text there automatically.
+// Color only on a real tty with NO_COLOR unset. Piped/CI
+// stdout stays plain automatically.
 fn json_color() -> bool {
     static C: OnceLock<bool> = OnceLock::new();
     *C.get_or_init(|| std::io::stdout().is_terminal() && std::env::var("NO_COLOR").is_err())
