@@ -47,7 +47,6 @@ VALUABLE
 WASHTUB
 WEMCA
 ZAPATA
-# Lockheed Skunk Works stealth demonstrator at Groom Lake (HAVE BLUE -> F-117 lineage)
 HAVE BLUE
 # Secret Service protectee / location codenames
 ACROBAT

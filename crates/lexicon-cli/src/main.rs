@@ -574,6 +574,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             ui.kv("type", &r.name_type);
                             ui.kv("agency", &r.authority_id);
                             ui.kv("marking", &r.marking);
+                            ui.kv("user", &r.attribution);
                             ui.kv("seq", &r.event_seq.to_string());
                             ui.kv("at", &r.created_at);
                             ui.banner_bottom(&pm);
@@ -627,8 +628,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ui.heading(&format!("{} names", recs.len()));
                     for r in &recs {
                         ui.line(&format!(
-                            "  {:<6} {:<14} {:<5} {}  {}",
-                            r.status, r.display, r.authority_id, r.marking, r.created_at
+                            "  {:<6} {:<14} {:<5} {}  {}  @{}",
+                            r.status,
+                            r.display,
+                            r.authority_id,
+                            r.marking,
+                            r.created_at,
+                            r.attribution
                         ));
                     }
                     ui.banner_bottom(&pm);
@@ -980,9 +986,6 @@ fn whoami() -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-// Primary outbound IP via the UDP-socket trick: connect a UDP socket to
-// a dummy addr and read the local addr. No packet is sent.
-// Returns None on air-gapped hosts with no route.
 fn detect_ip() -> Option<String> {
     use std::net::UdpSocket;
     UdpSocket::bind("0.0.0.0:0:0").ok().and_then(|s| {
@@ -991,8 +994,6 @@ fn detect_ip() -> Option<String> {
     })
 }
 
-// Best-effort hardware id: /etc/machine-id (Linux),
-// IOPlatformUUID (mac), else hostname.
 fn detect_hwid() -> Option<String> {
     std::fs::read_to_string("/etc/machine-id")
         .ok()

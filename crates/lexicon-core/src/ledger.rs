@@ -52,7 +52,8 @@ impl Ledger {
                 canonical BLOB NOT NULL,
                 event_hash BLOB NOT NULL,
                 signature BLOB NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                attribution TEXT NOT NULL DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS names (
                 normalized TEXT PRIMARY KEY,
@@ -93,18 +94,32 @@ impl Ledger {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if current < 1 {
-            let has_col: bool = self
+            let has_marking: bool = self
                 .conn
                 .prepare("SELECT * FROM names LIMIT 0")?
                 .column_names()
                 .contains(&"marking");
-            if !has_col {
+            if !has_marking {
                 self.conn.execute(
                     "ALTER TABLE names ADD COLUMN marking TEXT NOT NULL DEFAULT 'U'",
                     [],
                 )?;
             }
             self.conn.execute_batch("PRAGMA user_version = 1")?;
+        }
+        if current < 2 {
+            let has_attr: bool = self
+                .conn
+                .prepare("SELECT * FROM events LIMIT 0")?
+                .column_names()
+                .contains(&"attribution");
+            if !has_attr {
+                self.conn.execute(
+                    "ALTER TABLE events ADD COLUMN attribution TEXT NOT NULL DEFAULT ''",
+                    [],
+                )?;
+            }
+            self.conn.execute_batch("PRAGMA user_version = 2")?;
         }
         Ok(())
     }
@@ -159,12 +174,13 @@ impl Ledger {
         let canonical = event.canonical_bytes();
         let hash = event.hash();
         let sig_bytes = sig.to_bytes();
+        let attribution = event.attribution.canonical_bytes();
         let seq = self.next_seq()?;
 
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO events (seq, event_type, canonical, event_hash, signature, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO events (seq, event_type, canonical, event_hash, signature, created_at, attribution)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 seq as i64,
                 event.kind.type_name(),
@@ -172,6 +188,7 @@ impl Ledger {
                 hash.as_slice(),
                 sig_bytes.as_slice(),
                 event.created_at,
+                String::from_utf8(attribution).unwrap_or_default(),
             ],
         )?;
 
@@ -353,7 +370,7 @@ impl Ledger {
         let row = self
             .conn
             .query_row(
-                "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking FROM names n JOIN events e ON n.event_seq = e.seq WHERE n.normalized = ?1",
+                "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking, e.attribution FROM names n JOIN events e ON n.event_seq = e.seq WHERE n.normalized = ?1",
                 [&key],
                 |r| {
                     Ok(NameRecord {
@@ -365,6 +382,7 @@ impl Ledger {
                         event_seq: r.get::<_, i64>(5)? as u64,
                         created_at: r.get(6)?,
                         marking: r.get(7)?,
+                        attribution: r.get(8)?,
                     })
                 },
             )
@@ -376,7 +394,7 @@ impl Ledger {
     /// in Rust — keeps SQL out of the trust path.
     pub fn name_records(&self) -> Result<Vec<NameRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
+            "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking, e.attribution FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(NameRecord {
@@ -388,6 +406,7 @@ impl Ledger {
                 event_seq: r.get::<_, i64>(5)? as u64,
                 created_at: r.get(6)?,
                 marking: r.get(7)?,
+                attribution: r.get(8)?,
             })
         })?;
         let mut out = Vec::new();
@@ -401,7 +420,7 @@ impl Ledger {
     /// hash, signature — an auditor re-verifies without this binary.
     pub fn event_rows(&self) -> Result<Vec<EventRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.seq, e.event_type, e.created_at, n.display, n.marking, e.canonical, e.event_hash, e.signature FROM events e LEFT JOIN names n ON n.event_seq = e.seq ORDER BY e.seq",
+            "SELECT e.seq, e.event_type, e.created_at, n.display, n.marking, e.attribution, e.canonical, e.event_hash, e.signature FROM events e LEFT JOIN names n ON n.event_seq = e.seq ORDER BY e.seq",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(EventRow {
@@ -410,9 +429,10 @@ impl Ledger {
                 created_at: r.get(2)?,
                 name: r.get(3)?,
                 marking: r.get(4)?,
-                canonical: hex::encode(r.get::<_, Vec<u8>>(5)?),
-                event_hash: hex::encode(r.get::<_, Vec<u8>>(6)?),
-                signature: hex::encode(r.get::<_, Vec<u8>>(7)?),
+                attribution: r.get(5)?,
+                canonical: hex::encode(r.get::<_, Vec<u8>>(6)?),
+                event_hash: hex::encode(r.get::<_, Vec<u8>>(7)?),
+                signature: hex::encode(r.get::<_, Vec<u8>>(8)?),
             })
         })?;
         let mut out = Vec::new();
@@ -448,6 +468,7 @@ pub struct NameRecord {
     pub event_seq: u64,
     pub created_at: String,
     pub marking: String,
+    pub attribution: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -457,6 +478,7 @@ pub struct EventRow {
     pub created_at: String,
     pub name: Option<String>,
     pub marking: Option<String>,
+    pub attribution: String,
     pub canonical: String,
     pub event_hash: String,
     pub signature: String,

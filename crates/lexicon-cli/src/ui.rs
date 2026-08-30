@@ -83,11 +83,16 @@ impl Ui {
             return;
         }
         let c = marking_color(marking);
-        let _ = writeln!(
-            std::io::stdout(),
-            "{}",
-            self.paint_rgb(c, &format!("CLASSIFICATION: {marking}"))
-        );
+        let label = format!("CLASSIFICATION: {marking}");
+        // Center the label over the 40-char dash line below.
+        let pad = (40_usize.saturating_sub(label.len() + 2)) / 2;
+        let mut right = "=".repeat(pad);
+        let left = "=".repeat(pad);
+        if left.len() + 1 + label.len() + 1 + right.len() < 40 {
+            right.push('=');
+        }
+        let line = format!("{left} {label} {right}");
+        let _ = writeln!(std::io::stdout(), "{}", self.paint_rgb(c, &line));
         let _ = writeln!(std::io::stdout(), "{}", "-".repeat(40));
     }
 
@@ -99,11 +104,15 @@ impl Ui {
         }
         let c = marking_color(marking);
         let _ = writeln!(std::io::stdout(), "{}", "-".repeat(40));
-        let _ = writeln!(
-            std::io::stdout(),
-            "{}",
-            self.paint_rgb(c, &format!("CLASSIFICATION: {marking}"))
-        );
+        let label = format!("CLASSIFICATION: {marking}");
+        let pad = (40_usize.saturating_sub(label.len() + 2)) / 2;
+        let mut right = "=".repeat(pad);
+        let left = "=".repeat(pad);
+        if left.len() + 1 + label.len() + 1 + right.len() < 40 {
+            right.push('=');
+        }
+        let line = format!("{left} {label} {right}");
+        let _ = writeln!(std::io::stdout(), "{}", self.paint_rgb(c, &line));
     }
 
     fn paint(&self, c: Color, text: &str) -> String {
