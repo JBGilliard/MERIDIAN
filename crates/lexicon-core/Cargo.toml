@@ -1,0 +1,24 @@
+[package]
+name = "lexicon-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VRF minting, uniqueness ledger, and style linter for meridian-lexicon"
+repository.workspace = true
+
+[dependencies]
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+rusqlite.workspace = true
+zeroize.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+proptest = "1.6"
+tempfile = "3"

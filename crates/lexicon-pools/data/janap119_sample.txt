@@ -1,0 +1,12 @@
+# Sample JANAP-119 / ACP-119 voice call signs.
+# Hook only — not the live list. Production should load the real publication.
+PANTHER
+EAGLE
+HAWK
+VIPER
+MUSTANG
+PHANTOM
+TOMCAT
+HORNET
+FALCON
+RAVEN

@@ -1,0 +1,18 @@
+[package]
+name = "lexicon-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI for meridian-lexicon: mint, verify, lint, inspect"
+repository.workspace = true
+
+[[bin]]
+name = "lexicon"
+path = "src/main.rs"
+
+[dependencies]
+lexicon-core.workspace = true
+lexicon-pools.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+hex.workspace = true

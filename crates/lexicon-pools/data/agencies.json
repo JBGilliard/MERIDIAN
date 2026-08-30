@@ -1,0 +1,58 @@
+{
+  "agencies": [
+    {
+      "id": "CIA",
+      "first_letters": "ABC",
+      "digraphs": ["AE", "AM", "ZR", "GP", "KU", "MK", "LI", "JM", "HT", "MH"],
+      "sap_designators": ["HCS", "KDK"]
+    },
+    {
+      "id": "NSA",
+      "first_letters": "DEF",
+      "digraphs": ["NS"],
+      "sap_designators": ["SI", "TK", "G"]
+    },
+    {
+      "id": "DIA",
+      "first_letters": "GHI",
+      "digraphs": ["DI", "DH"],
+      "sap_designators": ["SI", "TK"]
+    },
+    {
+      "id": "FBI",
+      "first_letters": "JKL",
+      "digraphs": ["FB"],
+      "sap_designators": ["HCS"]
+    },
+    {
+      "id": "DHS",
+      "first_letters": "MNO",
+      "digraphs": ["HS"],
+      "sap_designators": ["HCS"]
+    },
+    {
+      "id": "INR",
+      "first_letters": "PQR",
+      "digraphs": ["IN"],
+      "sap_designators": ["SI"]
+    },
+    {
+      "id": "NCTC",
+      "first_letters": "STU",
+      "digraphs": ["NC"],
+      "sap_designators": ["HCS"]
+    },
+    {
+      "id": "ODNI",
+      "first_letters": "VWX",
+      "digraphs": ["OD"],
+      "sap_designators": ["SI"]
+    },
+    {
+      "id": "DOW",
+      "first_letters": "YZ",
+      "digraphs": ["DW"],
+      "sap_designators": ["TK"]
+    }
+  ]
+}

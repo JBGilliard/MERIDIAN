@@ -1,0 +1,12 @@
+[package]
+name = "lexicon-pools"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Curated word lists, digraph taxonomy, and agency allocations for meridian-lexicon"
+repository.workspace = true
+
+[dependencies]
+lexicon-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true

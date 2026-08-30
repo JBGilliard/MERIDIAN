@@ -1,0 +1,10 @@
+/target
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+.meridian
+*.sqlite
+*.sqlite-journal
+*.sk
+.DS_Store
+/data
