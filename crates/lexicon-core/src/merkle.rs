@@ -4,27 +4,20 @@
 //! node = SHA256(0x01 || left || right)
 //! Odd leftover at a level is promoted, not duplicated.
 
+use crate::crypto;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 pub fn leaf_hash(data: &[u8]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update([0x00]);
-    h.update(data);
-    h.finalize().into()
+    crypto::sha256(&[&[0x00], data])
 }
 
 pub fn node_hash(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update([0x01]);
-    h.update(left);
-    h.update(right);
-    h.finalize().into()
+    crypto::sha256(&[&[0x01], left, right])
 }
 
 /// Empty tree root: SHA256 of nothing. Distinct from a one-leaf tree.
 pub fn empty_root() -> [u8; 32] {
-    Sha256::digest([]).into()
+    crypto::sha256(&[])
 }
 
 pub fn root(leaves: &[[u8; 32]]) -> [u8; 32] {

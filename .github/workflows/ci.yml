@@ -26,6 +26,22 @@ jobs:
       - name: test
         run: cargo test --workspace
 
+  fips:
+    name: fips
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cmake ninja go
+        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build golang-go
+      - name: clippy fips
+        run: cargo clippy -p lexicon-core -p lexicon-cli --features fips --all-targets -- -D warnings
+      - name: test fips
+        run: cargo test -p lexicon-core -p lexicon-cli --features fips
+
   audit:
     name: cargo-audit
     runs-on: ubuntu-latest

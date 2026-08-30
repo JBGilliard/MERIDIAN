@@ -36,6 +36,9 @@ struct Cli {
     /// Classification banner baked into export/mint artifacts (e.g. "CUI", "SECRET//NOFORN").
     #[arg(long, global = true)]
     classification: Option<String>,
+    /// Refuse to run unless the FIPS 140-3 boundary is active (requires `--features fips`).
+    #[arg(long, global = true)]
+    approved_mode: bool,
     /// Test harness only. Honor LEXICON_USER / LEXICON_HOST. Stripped from release.
     #[cfg(debug_assertions)]
     #[arg(long, global = true, hide = true)]
@@ -275,6 +278,11 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    if cli.approved_mode {
+        lexicon_core::require_approved()?;
+    } else {
+        lexicon_core::init()?;
+    }
     #[cfg(debug_assertions)]
     let allow_env_identity = cli.allow_env_identity;
     #[cfg(not(debug_assertions))]
@@ -477,16 +485,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let events = led.len()?;
                 let root = hex::encode(led.root()?);
                 let agg = led.aggregate_marking()?;
+                let crypto = lexicon_core::boundary();
                 if ui.is_json() {
                     ui.json(&serde_json::json!({
                         "ok": true,
                         "events": events,
                         "root": root,
                         "marking": agg.to_string(),
+                        "crypto": crypto,
                     }));
                 } else {
                     ui.status(true, &format!("{events} events, root 0x{root}"));
                     ui.kv("marking", &agg.to_string());
+                    ui.line(&lexicon_core::status_line());
                 }
             }
             LedgerCmd::Root { sign, agency } => {
@@ -1013,5 +1024,11 @@ mod tests {
             Cli::try_parse_from(["lexicon", "--allow-env-identity", "check", "--name", "X"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn approved_mode_parses() {
+        let cli = Cli::try_parse_from(["lexicon", "--approved-mode", "ledger", "verify"]).unwrap();
+        assert!(cli.approved_mode);
     }
 }

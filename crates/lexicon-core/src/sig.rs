@@ -1,7 +1,6 @@
 //! Pluggable event-signature algorithm.
 
 use crate::error::{Error, Result};
-use ed25519_dalek::{Signature as EdSig, Verifier, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 /// One byte on the wire. New algorithms append; never renumber.
@@ -123,21 +122,19 @@ pub trait Signer {
 
 #[cfg(feature = "pq")]
 pub struct MlDsaSigner {
-    sk: ml_dsa::SigningKey<ml_dsa::MlDsa65>,
+    seed: [u8; 32],
 }
 
 #[cfg(feature = "pq")]
 impl MlDsaSigner {
     pub fn generate() -> Self {
-        use ml_dsa::{Generate, SigningKey};
-        Self {
-            sk: SigningKey::<ml_dsa::MlDsa65>::generate(),
-        }
+        let mut seed = [0u8; 32];
+        crate::crypto::fill_random(&mut seed);
+        Self { seed }
     }
 
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        use ml_dsa::{KeyExport, Keypair};
-        self.sk.verifying_key().to_bytes().to_vec()
+        crate::crypto::mldsa_public_key(&self.seed)
     }
 }
 
@@ -148,9 +145,8 @@ impl Signer for MlDsaSigner {
     }
 
     fn sign(&self, msg: &[u8]) -> Signature {
-        use ml_dsa::{SignatureEncoding, Signer as _};
-        let sig: ml_dsa::Signature<ml_dsa::MlDsa65> = self.sk.sign(msg);
-        Signature::new(SigAlg::MlDsa65, sig.to_bytes().to_vec())
+        let bytes = crate::crypto::mldsa_sign(&self.seed, msg).expect("ml-dsa-65 sign");
+        Signature::new(SigAlg::MlDsa65, bytes)
     }
 }
 
@@ -197,9 +193,7 @@ fn verify_part(alg: SigAlg, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
                 .try_into()
                 .map_err(|_| Error::Key("ed25519 public key must be 32 bytes".into()))?;
             let s64: [u8; 64] = sig.try_into().map_err(|_| Error::BadSignature)?;
-            let vk = VerifyingKey::from_bytes(&pk32).map_err(|e| Error::Key(e.to_string()))?;
-            let s = EdSig::from_bytes(&s64);
-            vk.verify(msg, &s).map_err(|_| Error::BadSignature)
+            crate::crypto::ed25519_verify(&pk32, msg, &s64)
         }
         SigAlg::MlDsa65 => verify_mldsa(pk, msg, sig),
     }
@@ -207,18 +201,7 @@ fn verify_part(alg: SigAlg, pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
 
 #[cfg(feature = "pq")]
 fn verify_mldsa(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
-    use ml_dsa::{MlDsa65, Verifier};
-    const PK_LEN: usize = 1952;
-    const SIG_LEN: usize = 3309;
-    let pk_arr: [u8; PK_LEN] = pk
-        .try_into()
-        .map_err(|_| Error::Key(format!("ml-dsa-65 pk must be {PK_LEN} bytes")))?;
-    let enc_pk: ml_dsa::EncodedVerifyingKey<MlDsa65> = pk_arr.into();
-    let vk = ml_dsa::VerifyingKey::<MlDsa65>::decode(&enc_pk);
-    let sig_arr: [u8; SIG_LEN] = sig.try_into().map_err(|_| Error::BadSignature)?;
-    let enc_sig: ml_dsa::EncodedSignature<MlDsa65> = sig_arr.into();
-    let s = ml_dsa::Signature::<MlDsa65>::decode(&enc_sig).ok_or(Error::BadSignature)?;
-    vk.verify(msg, &s).map_err(|_| Error::BadSignature)
+    crate::crypto::mldsa_verify(pk, msg, sig)
 }
 
 #[cfg(not(feature = "pq"))]
@@ -271,21 +254,9 @@ mod tests {
 
     #[test]
     fn ed25519_sign_verify() {
-        use ed25519_dalek::{Signer as _, SigningKey};
-        use rand::rngs::OsRng;
-        struct Ed25519Signer<'a>(&'a SigningKey);
-        impl<'a> Signer for Ed25519Signer<'a> {
-            fn alg(&self) -> SigAlg {
-                SigAlg::Ed25519
-            }
-            fn sign(&self, msg: &[u8]) -> Signature {
-                Signature::new(SigAlg::Ed25519, self.0.sign(msg).to_bytes())
-            }
-        }
-        let sk = SigningKey::generate(&mut OsRng);
-        let pk = sk.verifying_key().to_bytes();
-        let signer = Ed25519Signer(&sk);
-        let sig = signer.sign(b"msg");
+        let a = crate::authority::Authority::generate("T");
+        let pk = a.public_key();
+        let sig = a.sign(b"msg");
         assert_eq!(sig.parts.len(), 1);
         assert_eq!(sig.parts[0].alg, SigAlg::Ed25519);
         assert!(verify(&[&pk], b"msg", &sig).is_ok());
@@ -294,21 +265,10 @@ mod tests {
 
     #[test]
     fn two_person_control_requires_two_keys() {
-        use ed25519_dalek::{Signer as _, SigningKey};
-        use rand::rngs::OsRng;
-        struct Ed25519Signer<'a>(&'a SigningKey);
-        impl<'a> Signer for Ed25519Signer<'a> {
-            fn alg(&self) -> SigAlg {
-                SigAlg::Ed25519
-            }
-            fn sign(&self, msg: &[u8]) -> Signature {
-                Signature::new(SigAlg::Ed25519, self.0.sign(msg).to_bytes())
-            }
-        }
-        let a = Ed25519Signer(&SigningKey::generate(&mut OsRng));
-        let b = Ed25519Signer(&SigningKey::generate(&mut OsRng));
-        let pk_a = a.0.verifying_key().to_bytes();
-        let pk_b = b.0.verifying_key().to_bytes();
+        let a = crate::authority::Authority::generate("A");
+        let b = crate::authority::Authority::generate("B");
+        let pk_a = a.public_key();
+        let pk_b = b.public_key();
         let sig = Signature::join(vec![a.sign(b"msg"), b.sign(b"msg")]);
         // Both keys present: verifies.
         assert!(verify(&[&pk_a, &pk_b], b"msg", &sig).is_ok());

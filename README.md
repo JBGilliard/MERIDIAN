@@ -58,7 +58,7 @@ Every name-displaying command prints the classification at the top and the botto
 
 `--classification <m>` is a floor, not a filter. It can raise the banner (add a caveat by policy) but cannot lower it below the content max.
 
-`ledger verify` shows the ledger's aggregate marking: the max of every name in the ledger. If the ledger holds one `TS//SCI` name, the ledger file is `TS//SCI`.
+`ledger verify` shows the ledger's aggregate marking: the max of every name in the ledger. If the ledger holds one `TS//SCI` name, the ledger file is `TS//SCI`. It also prints a `STATUS` line naming the crypto boundary (rustcrypto vs AWS-LC FIPS 140-3).
 
 ```
 lexicon ledger names                      # banners + per-name marking
@@ -103,7 +103,8 @@ Two-person control: `key rotate --co-author <agency>` and `revoke --co-author <a
 ## Audit
 
 ```
-lexicon ledger verify                              # hashes and name index
+lexicon ledger verify                              # hashes, name index, STATUS crypto-boundary=...
+lexicon --approved-mode ledger verify              # refuse unless FIPS 140-3 is active
 lexicon ledger audit --public-key <pk>            # + every signature
 lexicon ledger audit --public-key <pk1> --public-key <pk2>   # two-person
 lexicon ledger export --file audit.jsonl          # full event log for offline audit
@@ -119,7 +120,18 @@ The signature algorithm is a field on the key, not on the message. A future move
 
 ML-DSA-65 is implemented behind the `pq` feature (`cargo build --features pq`). The default build stays Ed25519-only; with `pq`, `SigAlg::MlDsa65` signs and verifies for real. A ledger carrying ML-DSA signatures reads (canonical + Merkle) in either build; only the `pq` build verifies the signatures.
 
-The VRF is separate from event signatures. No post-quantum VRF standard exists yet. The VRF stays ECVRF-ed25519-TAI until one does.
+The VRF is separate from event signatures. No post-quantum VRF standard exists yet. The VRF stays ECVRF-ed25519-TAI (NSA-approved SC-13(2), not FIPS-validated) until one does.
+
+### FIPS 140-3
+
+Default build uses rustcrypto (`sha2`, `ed25519-dalek`). `--features fips` routes SHA-256, Ed25519, and ML-DSA through AWS-LC (FIPS 140-3 module; cmake and go to compile). ECVRF stays on curve25519-dalek — no validated module implements it; the accreditor accepts SC-13(2) in the SSPP.
+
+```
+cargo build -p lexicon-cli --release --features fips
+./target/release/lexicon --approved-mode ledger verify
+```
+
+`--approved-mode` exits unless the FIPS module is in FIPS mode and SHA-256 / Ed25519 known-answer tests pass. `ledger verify` prints `STATUS crypto-boundary=...` so the AO can grep it.
 
 ## Steward commands
 
@@ -143,7 +155,6 @@ The `historical` set holds real loaded codenames the tool refuses to mint — `O
 Meridian-lexicon is a reference implementation, not a deployed system. These items are specified, not built:
 
 - federation across authorities (pre-commit, quorum, loser-recall);
-- FIPS 140-3 module boundary;
 - a live authoritative reject feed or SCI/SAP register (the bundled lists are samples);
 - post-quantum transport (ML-KEM, FIPS 203);
 - HSM-backed key storage (the VRF takes the raw seed; an HSM cannot drive it — see the split-authority design in [RFC-0001 §3.1](docs/RFC-0001.md));

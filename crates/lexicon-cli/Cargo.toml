@@ -10,6 +10,11 @@ repository.workspace = true
 name = "lexicon"
 path = "src/main.rs"
 
+[features]
+default = []
+pq = ["lexicon-core/pq"]
+fips = ["lexicon-core/fips"]
+
 [dependencies]
 lexicon-core.workspace = true
 lexicon-pools.workspace = true

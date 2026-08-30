@@ -6,7 +6,6 @@ use crate::sig::{Signature, Signer};
 use crate::types::normalize;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -314,7 +313,7 @@ impl Ledger {
                     "seq gap: expected {expect}, got {seq}"
                 )));
             }
-            let computed: [u8; 32] = Sha256::digest(&canonical).into();
+            let computed = crate::crypto::sha256(&[&canonical]);
             if hash.as_slice() != computed.as_slice() {
                 return Err(Error::LedgerCorrupt(format!("hash mismatch at seq {seq}")));
             }

@@ -1,5 +1,9 @@
 //! ECVRF-EDWARDS25519-SHA512-TAI (RFC 9381 §5.5, suite 0x03).
 //!
+//! NSA-approved under CNSS Policy 15 / SC-13(2). Not FIPS-validated —
+//! no FIPS 140-3 module implements ECVRF. The accreditor accepts this
+//! in the SSPP; `--approved-mode` still names this suite on STATUS.
+//!
 //! TAI encode-to-curve timing depends on `alpha`. Our alpha is
 //! (authority, type, pool, seq, nonce) — not a secret identity.
 

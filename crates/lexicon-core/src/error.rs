@@ -78,4 +78,7 @@ pub enum Error {
         "ledger schema version {found} is newer than this binary (max {max}); upgrade lexicon"
     )]
     SchemaTooNew { found: i64, max: i64 },
+
+    #[error("crypto boundary: {0}")]
+    CryptoBoundary(String),
 }

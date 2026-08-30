@@ -1,7 +1,6 @@
 use crate::error::{Error, Result};
 use crate::types::{normalize, NameType};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -236,7 +235,7 @@ impl Event {
     }
 
     pub fn hash(&self) -> [u8; 32] {
-        Sha256::digest(self.canonical_bytes()).into()
+        crate::crypto::sha256(&[&self.canonical_bytes()])
     }
 
     pub fn issued_name(&self) -> Option<String> {

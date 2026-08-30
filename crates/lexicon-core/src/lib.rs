@@ -4,6 +4,7 @@
 
 pub mod attribition;
 pub mod authority;
+pub mod crypto;
 pub mod error;
 pub mod events;
 pub mod janap;
@@ -19,6 +20,7 @@ pub mod vrf;
 
 pub use attribition::Attribution;
 pub use authority::Authority;
+pub use crypto::{boundary, init, require_approved, status_line, CryptoBoundary};
 pub use error::{Error, Result};
 pub use events::{Event, EventKind, NameStatus};
 pub use janap::{JanapEntry, JanapSlot, JanapTable};

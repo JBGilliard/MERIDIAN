@@ -1,42 +1,43 @@
+use crate::crypto;
 use crate::error::{Error, Result};
 use crate::sig::{SigAlg, Signature, Signer};
 use crate::vrf::{self, VrfOutput, VrfProof};
-use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
 use std::fs;
 use std::path::Path;
 use zeroize::Zeroize;
 
 pub struct Authority {
     pub id: String,
-    signing_key: SigningKey,
+    seed: [u8; 32],
 }
 
 impl Authority {
     pub fn generate(id: impl Into<String>) -> Self {
+        let mut seed = [0u8; 32];
+        crypto::fill_random(&mut seed);
         Self {
             id: id.into(),
-            signing_key: SigningKey::generate(&mut OsRng),
+            seed,
         }
     }
 
     pub fn from_seed(id: impl Into<String>, seed: [u8; 32]) -> Self {
         Self {
             id: id.into(),
-            signing_key: SigningKey::from_bytes(&seed),
+            seed,
         }
     }
 
     pub fn seed(&self) -> [u8; 32] {
-        self.signing_key.to_bytes()
+        self.seed
     }
 
     pub fn public_key(&self) -> [u8; 32] {
-        self.signing_key.verifying_key().to_bytes()
+        crypto::ed25519_public_key(&self.seed)
     }
 
     pub fn vrf_prove(&self, alpha: &[u8]) -> Result<(VrfProof, VrfOutput)> {
-        vrf::prove(&self.signing_key.to_bytes(), alpha)
+        vrf::prove(&self.seed, alpha)
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -68,14 +69,19 @@ impl Authority {
     }
 }
 
+impl Drop for Authority {
+    fn drop(&mut self) {
+        self.seed.zeroize();
+    }
+}
+
 impl Signer for Authority {
     fn alg(&self) -> SigAlg {
         SigAlg::Ed25519
     }
 
     fn sign(&self, msg: &[u8]) -> Signature {
-        use ed25519_dalek::Signer as _;
-        Signature::new(SigAlg::Ed25519, self.signing_key.sign(msg).to_bytes())
+        Signature::new(SigAlg::Ed25519, crypto::ed25519_sign(&self.seed, msg))
     }
 }
 

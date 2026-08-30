@@ -19,11 +19,15 @@ rusqlite.workspace = true
 zeroize.workspace = true
 time.workspace = true
 ml-dsa = { version = "0.1.1", optional = true }
+# aws-lc-fips-sys needs cmake + go. Event sigs/hash go through it; dalek stays for ECVRF.
+aws-lc-rs = { version = "1.18", optional = true, features = ["fips"] }
 
 [features]
 default = []
 # ML-DSA (FIPS 204) event signatures. Off by default; `cargo build --features pq` enables it.
 pq = ["ml-dsa"]
+# SHA-256 / Ed25519 / ML-DSA via AWS-LC FIPS 140-3. ECVRF stays outside (SC-13(2)).
+fips = ["dep:aws-lc-rs"]
 
 [dev-dependencies]
 proptest = "1.6"
