@@ -407,12 +407,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .clone()
                     .or_else(|| std::env::var("LEXICON_USER").ok())
                     .or_else(|| std::env::var("USER").ok())
-                    .or_else(|| whoami())
+                    .or_else(whoami)
                     .ok_or_else(|| "no user; pass --user or set LEXICON_USER".to_string())?,
                 host: cli
                     .host
                     .clone()
-                    .or_else(|| hostname())
+                    .or_else(hostname)
                     .ok_or_else(|| "no host; pass --host".to_string())?,
                 ip: cli.ip.clone().or_else(detect_ip),
                 hwid: cli.hwid.clone().or_else(detect_hwid),
@@ -1006,7 +1006,7 @@ fn detect_hwid() -> Option<String> {
                 .and_then(|o| String::from_utf8(o.stdout).ok())
                 .map(|s| s.trim().to_string())
         })
-        .or_else(|| hostname())
+        .or_else(hostname)
 }
 
 fn sample(words: &[String]) -> String {
