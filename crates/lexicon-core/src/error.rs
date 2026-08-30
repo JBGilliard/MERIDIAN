@@ -74,6 +74,8 @@ pub enum Error {
         owner: String,
     },
 
-    #[error("ledger schema version {found} is newer than this binary (max {max}); upgrade lexicon")]
+    #[error(
+        "ledger schema version {found} is newer than this binary (max {max}); upgrade lexicon"
+    )]
     SchemaTooNew { found: i64, max: i64 },
 }

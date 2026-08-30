@@ -85,6 +85,8 @@ Keys and the ledger go in `.meridian/`. Use `--data-dir` to change this path.
 
 Add `--json` to any command for stable machine output (scripts, CI). The default is human-readable.
 
+Signed events bind the OS session: `whoami`, hostname, and machine-id. There is no `--user` / `--host` / `--ip` / `--hwid`. Those strings are a claim, not a PIV/CAC attestation.
+
 End-to-end walkthrough: `scripts/demo.sh`.
 
 ## Keys and control
@@ -144,7 +146,8 @@ Meridian-lexicon is a reference implementation, not a deployed system. These ite
 - FIPS 140-3 module boundary;
 - a live authoritative reject feed or SCI/SAP register (the bundled lists are samples);
 - post-quantum transport (ML-KEM, FIPS 203);
-- HSM-backed key storage (the VRF takes the raw seed; an HSM cannot drive it — see the split-authority design in [RFC-0001 §3.1](docs/RFC-0001.md)).
+- HSM-backed key storage (the VRF takes the raw seed; an HSM cannot drive it — see the split-authority design in [RFC-0001 §3.1](docs/RFC-0001.md));
+- PIV/CAC user binding (events carry an OS-session claim; AU-10 non-repudiation waits on the HSM profile).
 
 See [docs/RFC-0001.md](docs/RFC-0001.md) for the full specification.
 

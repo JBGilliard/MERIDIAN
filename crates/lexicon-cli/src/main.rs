@@ -12,8 +12,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod identity;
 mod steward;
 mod ui;
+use identity::session_attribution;
 use ui::Ui;
 
 #[derive(Parser)]
@@ -34,18 +36,10 @@ struct Cli {
     /// Classification banner baked into export/mint artifacts (e.g. "CUI", "SECRET//NOFORN").
     #[arg(long, global = true)]
     classification: Option<String>,
-    /// User who ran the command (bound into the event). Defaults to $USER.
-    #[arg(long, global = true)]
-    user: Option<String>,
-    /// Host the command ran on (bound into the event). Defaults to hostname.
-    #[arg(long, global = true)]
-    host: Option<String>,
-    /// Operator IP (bound into the event). Air-gapped hosts have none.
-    #[arg(long, global = true)]
-    ip: Option<String>,
-    /// Hardware id of the host (machine UUID / MAC / serial).
-    #[arg(long, global = true)]
-    hwid: Option<String>,
+    /// Test harness only. Honor LEXICON_USER / LEXICON_HOST. Stripped from release.
+    #[cfg(debug_assertions)]
+    #[arg(long, global = true, hide = true)]
+    allow_env_identity: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -281,6 +275,10 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    #[cfg(debug_assertions)]
+    let allow_env_identity = cli.allow_env_identity;
+    #[cfg(not(debug_assertions))]
+    let allow_env_identity = false;
     let ui = Ui::new(cli.json);
     match cli.cmd {
         Cmd::Key { cmd } => match cmd {
@@ -338,7 +336,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     new_pk: hex::encode(new.public_key()),
                     new_alg: new.alg(),
                 };
-                let event = Event::new(kind);
+                let mut event = Event::new(kind);
+                event.attribution = session_attribution(allow_env_identity)?;
                 let canonical = event.canonical_bytes();
                 let mut led = open_ledger(&cli.data_dir)?;
                 let seq = if let Some(co) = &co_author {
@@ -404,22 +403,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             for w in marking.warnings() {
                 eprintln!("warning: {w}");
             }
-            let attribution = lexicon_core::Attribution {
-                user: cli
-                    .user
-                    .clone()
-                    .or_else(|| std::env::var("LEXICON_USER").ok())
-                    .or_else(|| std::env::var("USER").ok())
-                    .or_else(whoami)
-                    .ok_or_else(|| "no user; pass --user or set LEXICON_USER".to_string())?,
-                host: cli
-                    .host
-                    .clone()
-                    .or_else(hostname)
-                    .ok_or_else(|| "no host; pass --host".to_string())?,
-                ip: cli.ip.clone().or_else(detect_ip),
-                hwid: cli.hwid.clone().or_else(detect_hwid),
-            };
+            let attribution = session_attribution(allow_env_identity)?;
             let minted = minter.mint(MintRequest {
                 name_type: r#type.into(),
                 pool_id: pools.id.clone(),
@@ -888,7 +872,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             agency,
             reason,
         } => {
-            retire_or_revoke(&ui, &cli.data_dir, &agency, &name, &reason, false, None)?;
+            let agency = agency.to_ascii_uppercase();
+            let mut event = Event::new(EventKind::Retired {
+                name: name.clone(),
+                reason,
+                authority_id: agency.clone(),
+            });
+            event.attribution = session_attribution(allow_env_identity)?;
+            append_lifecycle(&ui, &cli.data_dir, &agency, event, None)?;
         }
         Cmd::Revoke {
             name,
@@ -896,46 +887,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             reason,
             co_author,
         } => {
-            retire_or_revoke(
-                &ui,
-                &cli.data_dir,
-                &agency,
-                &name,
-                &reason,
-                true,
-                co_author.as_deref(),
-            )?;
+            let agency = agency.to_ascii_uppercase();
+            let mut event = Event::new(EventKind::Revoked {
+                name: name.clone(),
+                reason,
+                authority_id: agency.clone(),
+            });
+            event.attribution = session_attribution(allow_env_identity)?;
+            append_lifecycle(&ui, &cli.data_dir, &agency, event, co_author.as_deref())?;
         }
     }
     Ok(())
 }
 
-fn retire_or_revoke(
+fn append_lifecycle(
     ui: &Ui,
     data: &Path,
     agency: &str,
-    name: &str,
-    reason: &str,
-    revoke: bool,
+    event: Event,
     co_author: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let agency = agency.to_ascii_uppercase();
-    let auth = load_auth(data, &agency)?;
+    let auth = load_auth(data, agency)?;
     let mut led = open_ledger(data)?;
-    let kind = if revoke {
-        EventKind::Revoked {
-            name: name.to_string(),
-            reason: reason.to_string(),
-            authority_id: agency,
-        }
-    } else {
-        EventKind::Retired {
-            name: name.to_string(),
-            reason: reason.to_string(),
-            authority_id: agency,
-        }
+    let verb = event.kind.type_name();
+    let norm = match &event.kind {
+        EventKind::Retired { name, .. } | EventKind::Revoked { name, .. } => normalize(name),
+        _ => return Err("append_lifecycle: not a retire/revoke event".into()),
     };
-    let event = Event::new(kind);
     let canonical = event.canonical_bytes();
     let seq = if let Some(co) = co_author {
         let co_agency = co.to_ascii_uppercase();
@@ -946,7 +924,6 @@ fn retire_or_revoke(
     } else {
         led.append(event, &auth)?
     };
-    let norm = normalize(name);
     if ui.is_json() {
         ui.json(&serde_json::json!({
             "name": norm,
@@ -954,7 +931,6 @@ fn retire_or_revoke(
             "two_person": co_author.is_some(),
         }));
     } else {
-        let verb = if revoke { "revoked" } else { "retired" };
         ui.status(true, &format!("{verb} {norm} (seq {seq})"));
         if co_author.is_some() {
             ui.kv("co-author", "required");
@@ -971,45 +947,6 @@ fn load_auth(data: &Path, agency: &str) -> Result<Authority, Error> {
 }
 fn open_ledger(data: &Path) -> Result<Ledger, Error> {
     Ledger::open(&data.join("ledger.sqlite"))
-}
-
-fn hostname() -> Option<String> {
-    std::process::Command::new("hostname")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-}
-
-fn whoami() -> Option<String> {
-    std::process::Command::new("whoami")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-}
-
-fn detect_ip() -> Option<String> {
-    use std::net::UdpSocket;
-    UdpSocket::bind("0.0.0.0:0").ok().and_then(|s| {
-        s.connect("8.8.8.8:80").ok()?;
-        s.local_addr().ok().map(|a| a.ip().to_string())
-    })
-}
-
-fn detect_hwid() -> Option<String> {
-    std::fs::read_to_string("/etc/machine-id")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .or_else(|| {
-            std::process::Command::new("ioreg")
-                .args(["-d2", "-c", "IOPlatformUUID"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .map(|s| s.trim().to_string())
-        })
-        .or_else(hostname)
 }
 
 fn sample(words: &[String]) -> String {
@@ -1037,4 +974,44 @@ fn page_marking(recs: &[lexicon_core::NameRecord], floor: Option<&str>) -> Strin
         }
     }
     agg.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn rejects_self_report_user_flag() {
+        assert!(
+            Cli::try_parse_from(["lexicon", "--user", "jdoe", "check", "--name", "X"]).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_self_report_host_ip_hwid() {
+        for flag in ["--host", "--ip", "--hwid"] {
+            assert!(
+                Cli::try_parse_from(["lexicon", flag, "x", "check", "--name", "X"]).is_err(),
+                "{flag} should be rejected"
+            );
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn allow_env_identity_parses_in_debug() {
+        let cli = Cli::try_parse_from(["lexicon", "--allow-env-identity", "check", "--name", "X"])
+            .unwrap();
+        assert!(cli.allow_env_identity);
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn allow_env_identity_absent_in_release() {
+        assert!(
+            Cli::try_parse_from(["lexicon", "--allow-env-identity", "check", "--name", "X"])
+                .is_err()
+        );
+    }
 }

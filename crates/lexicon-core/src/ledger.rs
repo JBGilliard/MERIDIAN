@@ -214,16 +214,12 @@ impl Ledger {
                 )?;
             }
             EventKind::Retired {
-                name,
-                authority_id,
-                ..
+                name, authority_id, ..
             } => {
                 update_status(&tx, name, NameStatus::Retired, seq, authority_id)?;
             }
             EventKind::Revoked {
-                name,
-                authority_id,
-                ..
+                name, authority_id, ..
             } => {
                 update_status(&tx, name, NameStatus::Revoked, seq, authority_id)?;
             }

@@ -1,19 +1,40 @@
-//! User attribution: who ran the command, on which host.
-//! Bound into every event's canonical bytes (signed, hashed).
+//! User attribution bound into every event's canonical bytes (signed, hashed).
+//!
+//! These fields are an OS-session *claim*, not an attestation. `user` / `host`
+//! / `hwid` come from whoami, hostname, and machine-id. They are not
+//! cryptographically bound to a person. A CLI flag cannot override them in a
+//! production build.
+//!
+//! PIV/CAC binding is the HSM profile (future). AU-10 non-repudiation waits
+//! on that — this crate records who the OS said was at the keyboard.
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Attribution {
+    /// OS session user (whoami). A claim, not a PIV/CAC attestation.
     pub user: String,
+    /// OS hostname. A claim.
     pub host: String,
+    /// Kept for wire compat with older events. New collection leaves this None.
     #[serde(default)]
     pub ip: Option<String>,
+    /// machine-id / platform UUID. A claim.
     #[serde(default)]
     pub hwid: Option<String>,
 }
 
 impl Attribution {
+    /// Fresh session claim. `ip` is always None — a UDP-probe address is not identity.
+    pub fn session(user: impl Into<String>, host: impl Into<String>, hwid: Option<String>) -> Self {
+        Self {
+            user: user.into(),
+            host: host.into(),
+            ip: None,
+            hwid,
+        }
+    }
+
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         put(&mut out, &self.user);
@@ -102,5 +123,14 @@ mod tests {
         assert_eq!(s, format!("jdoe@ws001 ip=10.0.0.1 hwid={hwid}"));
         // length prefix 200 = 0xC8 makes the blob invalid UTF-8
         assert!(String::from_utf8(a.canonical_bytes()).is_err());
+    }
+
+    #[test]
+    fn session_claim_has_no_ip() {
+        let a = Attribution::session("jdoe", "ws001", Some("mid".into()));
+        assert!(a.ip.is_none());
+        assert_eq!(a.user, "jdoe");
+        assert_eq!(a.host, "ws001");
+        assert_eq!(a.hwid.as_deref(), Some("mid"));
     }
 }
