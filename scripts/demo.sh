@@ -15,7 +15,7 @@ if [[ ! -x "$BIN" ]]; then
   exit 1
 fi
 
-echo "== keygen"
+echo "== key generate"
 "$BIN" --data-dir "$DATA" key generate --agency DIA --json
 "$BIN" --data-dir "$DATA" key generate --agency CIA --json
 

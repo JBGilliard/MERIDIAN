@@ -52,7 +52,7 @@ pub enum Error {
     #[error("key error: {0}")]
     Key(String),
 
-    #[error("no key for {agency}; run: lexicon keygen --agency {agency}")]
+    #[error("no key for {agency}; run: lexicon key generate --agency {agency}")]
     MissingKey { agency: String },
 
     #[error("io: {0}")]
