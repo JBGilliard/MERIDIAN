@@ -5,7 +5,8 @@ use lexicon_core::Error;
 use serde::Deserialize;
 use std::path::Path;
 
-const CLASSIFICATION_ARGV_WARNING: &str = "warning: --classification is argv-audited; prefer --marking-file on high side";
+const CLASSIFICATION_ARGV_WARNING: &str =
+    "warning: --classification is argv-audited; prefer --marking-file on high side";
 
 #[derive(Debug, Clone, Default)]
 pub struct BindingInputs {
@@ -68,15 +69,15 @@ pub fn warn_argv_classification(used: bool) {
     }
 }
 
-pub fn resolve(cli_marking_file: Option<&Path>, cli_binding_file: Option<&Path>, argv_classification: Option<&str>) -> Result<ResolvedInputs, Error> {
+pub fn resolve(
+    cli_marking_file: Option<&Path>,
+    cli_binding_file: Option<&Path>,
+    argv_classification: Option<&str>,
+) -> Result<ResolvedInputs, Error> {
     warn_argv_classification(argv_classification.is_some());
 
-    let file_floor = cli_marking_file
-        .map(load_marking_file)
-        .transpose()?;
-    let binding = cli_binding_file
-        .map(load_binding_file)
-        .transpose()?;
+    let file_floor = cli_marking_file.map(load_marking_file).transpose()?;
+    let binding = cli_binding_file.map(load_binding_file).transpose()?;
 
     let floor = binding
         .as_ref()
@@ -134,17 +135,17 @@ fn load_binding_file(path: &Path) -> Result<BindingInputs, Error> {
 }
 
 fn read_config<T: for<'de> Deserialize<'de>>(path: &Path, label: &str) -> Result<T, Error> {
-    let raw = std::fs::read_to_string(path).map_err(|_| {
-        Error::Parse(format!("{label}: cannot read {}", path.display()))
-    })?;
+    let raw = std::fs::read_to_string(path)
+        .map_err(|_| Error::Parse(format!("{label}: cannot read {}", path.display())))?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     match ext.as_str() {
-        "json" => serde_json::from_str(&raw)
-            .map_err(|_| Error::Parse(format!("{label}: invalid JSON"))),
+        "json" => {
+            serde_json::from_str(&raw).map_err(|_| Error::Parse(format!("{label}: invalid JSON")))
+        }
         "toml" => toml::from_str(&raw).map_err(|_| Error::Parse(format!("{label}: invalid TOML"))),
         _ => serde_json::from_str(&raw)
             .or_else(|_| toml::from_str(&raw))
@@ -170,7 +171,8 @@ pub fn mint_marking(floor: &ResolvedInputs) -> Marking {
 }
 
 pub fn pick_opt(bind: Option<&str>, argv: Option<&str>) -> Option<String> {
-    bind.map(str::to_string).or_else(|| argv.map(str::to_string))
+    bind.map(str::to_string)
+        .or_else(|| argv.map(str::to_string))
 }
 
 pub fn merge_controls(
@@ -181,12 +183,7 @@ pub fn merge_controls(
     fgi: &[String],
 ) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     let Some(b) = binding else {
-        return (
-            sci.to_vec(),
-            dissem.to_vec(),
-            aea.to_vec(),
-            fgi.to_vec(),
-        );
+        return (sci.to_vec(), dissem.to_vec(), aea.to_vec(), fgi.to_vec());
     };
     (
         if sci.is_empty() {
@@ -247,11 +244,7 @@ mod tests {
     #[test]
     fn binding_file_requires_program_for_compartment() {
         let mut f = NamedTempFile::with_suffix(".json").unwrap();
-        writeln!(
-            f,
-            r#"{{"compartment_id": "HOL", "program_pid": null}}"#
-        )
-        .unwrap();
+        writeln!(f, r#"{{"compartment_id": "HOL", "program_pid": null}}"#).unwrap();
         let err = load_binding_file(f.path()).unwrap_err().to_string();
         assert!(err.contains("compartment_id requires program_pid"));
         assert!(!err.contains("HOL"));
@@ -283,17 +276,16 @@ dissem = ["NOFORN"]
         let mut mf = NamedTempFile::with_suffix(".json").unwrap();
         writeln!(mf, r#"{{"marking": "SECRET"}}"#).unwrap();
         let mut bf = NamedTempFile::with_suffix(".json").unwrap();
-        writeln!(
-            bf,
-            r#"{{"marking": "TS//TK", "program_pid": "QSV"}}"#
-        )
-        .unwrap();
+        writeln!(bf, r#"{{"marking": "TS//TK", "program_pid": "QSV"}}"#).unwrap();
         let r = resolve(Some(mf.path()), Some(bf.path()), Some("CUI")).unwrap();
         assert_eq!(
             r.floor.as_ref().map(|m| m.level),
             Some(lexicon_core::marking::Level::TopSecret)
         );
-        assert_eq!(r.binding.as_ref().unwrap().program_pid.as_deref(), Some("QSV"));
+        assert_eq!(
+            r.binding.as_ref().unwrap().program_pid.as_deref(),
+            Some("QSV")
+        );
     }
 
     #[test]

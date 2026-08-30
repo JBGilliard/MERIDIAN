@@ -60,7 +60,7 @@ gpg --verify SHA256SUMS.asc SHA256SUMS
 cosign verify-blob --key cosign.pub --signature SHA256SUMS.sig SHA256SUMS
 ```
 
-Read `INTRO-PACKAGE.txt` for the exact artifact list and rustc/toolchain pin (`rust-toolchain.toml`, currently 1.80.0).
+Read `INTRO-PACKAGE.txt` for the exact artifact list and rustc/toolchain pin (`rust-toolchain.toml`, currently 1.85.0).
 
 ## Air-gap rebuild
 

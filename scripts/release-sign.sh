@@ -182,7 +182,7 @@ Not a NICKA system of record. Official assignment remains NICKA.
 version:     $VERSION
 created:     $CREATED UTC
 rustc:       $RUSTC
-toolchain:   rust-toolchain.toml (1.80.0, profile=default)
+toolchain:   rust-toolchain.toml (1.85.0, profile=default)
 signer:      $SIGNER
 
 Artifacts (SHA-256):

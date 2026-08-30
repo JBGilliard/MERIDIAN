@@ -6,7 +6,7 @@
 #   scripts/sbom.sh dist/lexicon            # dist/lexicon.cdx.json
 #   scripts/sbom.sh dist                    # dist/lexicon.cdx.json
 #
-# Requires: cargo install cargo-cyclonedx --locked
+# Requires: cargo install cargo-cyclonedx --version 0.5.9 --locked
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -20,7 +20,7 @@ Writes lexicon.cdx.json next to the lexicon binary (CycloneDX JSON).
 Default destination: target/release/lexicon.cdx.json
 
 Install the generator on a networked builder:
-  cargo install cargo-cyclonedx --locked
+  cargo install cargo-cyclonedx --version 0.5.9 --locked
 EOF
 }
 

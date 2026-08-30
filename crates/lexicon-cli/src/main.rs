@@ -22,7 +22,7 @@ mod input_files;
 mod steward;
 mod ui;
 use identity::session_attribution;
-use input_files::{mint_marking, merge_controls, pick_opt, resolve, ResolvedInputs};
+use input_files::{merge_controls, mint_marking, pick_opt, resolve, ResolvedInputs};
 use ui::Ui;
 
 const CLI_BANNER: &str = "\
@@ -802,10 +802,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         if ui.is_json() {
                             ui.json(&r);
                         } else {
-                            let pm = page_marking(
-                                std::slice::from_ref(&r),
-                                inputs.floor.as_ref(),
-                            );
+                            let pm = page_marking(std::slice::from_ref(&r), inputs.floor.as_ref());
                             ui.banner_top(&pm);
                             ui.status(r.status == "issued", &r.display);
                             ui.kv("status", &r.status);
@@ -1155,13 +1152,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let pid = pid.to_ascii_uppercase();
                 let sap_type = SapType::parse(&sap_type)?;
                 let level = Level::parse(&level).ok_or_else(|| format!("bad --level: {level}"))?;
-                let (sci, dissem, aea, fgi) = merge_controls(
-                    inputs.binding.as_ref(),
-                    &sci,
-                    &dissem,
-                    &aea,
-                    &fgi,
-                );
+                let (sci, dissem, aea, fgi) =
+                    merge_controls(inputs.binding.as_ref(), &sci, &dissem, &aea, &fgi);
                 let controls = collect_controls(sci, dissem, aea, fgi);
                 {
                     let led = open_ledger(&data_dir, &policy)?;
@@ -1479,13 +1471,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         fgi,
                     } => (false, program, compartment, sci, dissem, aea, fgi),
                 };
-                let (sci, dissem, aea, fgi) = merge_controls(
-                    inputs.binding.as_ref(),
-                    &sci,
-                    &dissem,
-                    &aea,
-                    &fgi,
-                );
+                let (sci, dissem, aea, fgi) =
+                    merge_controls(inputs.binding.as_ref(), &sci, &dissem, &aea, &fgi);
                 let delta = collect_controls(sci, dissem, aea, fgi);
                 if delta.is_empty() {
                     return Err("need at least one of --sci/--dissem/--aea/--fgi".into());
@@ -1711,7 +1698,11 @@ fn parse_vrf_seed(hex_str: &str) -> Result<[u8; 32], Error> {
         .map_err(|_| Error::Key("seed must be 32 bytes".into()))
 }
 
-fn mint_from_seed(cli: &Cli, inputs: &ResolvedInputs, ui: &Ui) -> Result<(), Box<dyn std::error::Error>> {
+fn mint_from_seed(
+    cli: &Cli,
+    inputs: &ResolvedInputs,
+    ui: &Ui,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Cmd::Mint {
         seed: Some(seed_hex),
         r#type,
@@ -2465,10 +2456,7 @@ mod tests {
         let m = page_marking(&recs, None);
         assert_eq!(m.display_banner(), "TOP SECRET//TK//NOFORN");
         assert_eq!(m.display_portion(), "TS//TK//NF");
-        let floored = page_marking(
-            &recs,
-            Some(&"TS//TK//SAR-QSV//NOFORN".parse().unwrap()),
-        );
+        let floored = page_marking(&recs, Some(&"TS//TK//SAR-QSV//NOFORN".parse().unwrap()));
         assert_eq!(floored.display_banner(), "TOP SECRET//TK//SAR-QSV//NOFORN");
     }
 }

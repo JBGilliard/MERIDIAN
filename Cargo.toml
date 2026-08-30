@@ -10,7 +10,7 @@ repository = "https://github.com/jbgilliard/MERIDIAN"
 homepage = "https://github.com/jbgilliard/MERIDIAN"
 description = "Open-source registry, deconfliction, and nomenclature for the intelligence community"
 authors = ["MERIDIAN contributors"]
-rust-version = "1.80"
+rust-version = "1.85"
 
 [workspace.dependencies]
 lexicon-core = { path = "crates/lexicon-core", version = "0.1.0" }

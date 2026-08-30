@@ -8,7 +8,7 @@ MERIDIAN is Rust + crates.io dependencies + a bundled SQLite (via `rusqlite` `bu
 |------|------|
 | `deny.toml` | `cargo deny check` — licenses, advisories, duplicate crates, source allowlist |
 | `Cargo.lock` | Locked dependency graph; required for `--locked` / vendor / intro package |
-| `rust-toolchain.toml` | Pinned `rustc` 1.80.0, `profile = default` |
+| `rust-toolchain.toml` | Pinned `rustc` 1.85.0, `profile = default` |
 | `.cargo/config.toml.example` | Vendored-sources replace for air-gap (`../vendor`) |
 
 ## cargo deny

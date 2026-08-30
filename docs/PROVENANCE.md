@@ -19,7 +19,7 @@ Sample pool files are explicitly non-authoritative:
 | Input | Record |
 |-------|--------|
 | Git commit | Tag or `git rev-parse HEAD` at build time (adopter records locally) |
-| Toolchain | `rust-toolchain.toml` → rustc 1.80.0 |
+| Toolchain | `rust-toolchain.toml` → rustc 1.85.0 |
 | Lockfile | `Cargo.lock` (committed; `--locked` builds) |
 | Features | Document `default`, `highside`, `fips`, `pq`, `hsm` as built |
 | Profile | `[profile.release]` — `panic=abort`, `lto`, `strip=symbols`, `opt-level=3` |
