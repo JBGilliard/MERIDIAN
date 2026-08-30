@@ -60,8 +60,7 @@ impl Ledger {
                 status TEXT NOT NULL,
                 event_seq INTEGER NOT NULL,
                 name_type TEXT NOT NULL,
-                authority_id TEXT NOT NULL,
-                marking TEXT NOT NULL DEFAULT 'U'
+                authority_id TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS snapshots (
                 seq INTEGER PRIMARY KEY,
@@ -80,6 +79,38 @@ impl Ledger {
                 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
             ",
         )?;
+        self.migrate()?;
+        Ok(())
+    }
+
+    /// Forward-only schema migration. `PRAGMA user_version` tracks the
+    /// schema version; each step ALTERs an old DB up to the next version.
+    /// A 50-year ledger must survive a binary upgrade without a
+    /// manual `rm .meridian/ledger.sqlite`, so this is the one place
+    /// where the schema is allowed to change.
+    fn migrate(&self) -> Result<()> {
+        // v0 (or no version yet): add the `marking` column to `names`.
+        // CREATE TABLE IF NOT EXISTS does not add columns to an
+        // existing table, so an old ledger opened by a new binary needs
+        // an explicit ALTER.
+        let current: i64 = self
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if current < 1 {
+            let has_col: bool = self
+                .conn
+                .prepare("SELECT * FROM names LIMIT 0")?
+                .column_names()
+                .iter()
+                .any(|n| *n == "marking");
+            if !has_col {
+                self.conn.execute(
+                    "ALTER TABLE names ADD COLUMN marking TEXT NOT NULL DEFAULT 'U'",
+                    [],
+                )?;
+            }
+            self.conn.execute_batch("PRAGMA user_version = 1")?;
+        }
         Ok(())
     }
 
