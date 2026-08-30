@@ -11,6 +11,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+mod ui;
+use ui::Ui;
+
 #[derive(Parser)]
 #[command(
     name = "lexicon",
@@ -20,6 +23,9 @@ use std::process::ExitCode;
 struct Cli {
     #[arg(long, global = true, default_value = ".meridian")]
     data_dir: PathBuf,
+    /// Emit stable JSON for scripts. Default is human-readable.
+    #[arg(long, global = true)]
+    json: bool,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -139,6 +145,7 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    let ui = Ui::new(cli.json);
     match cli.cmd {
         Cmd::Keygen { agency } => {
             let agency = agency.to_ascii_uppercase();
@@ -149,14 +156,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             let auth = Authority::generate(&agency);
             auth.save(&keys)?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "agency": agency,
-                    "public_key": hex::encode(auth.public_key()),
-                    "path": keys.display().to_string(),
-                })
-            );
+            let pk = hex::encode(auth.public_key());
+            if ui.is_json() {
+                ui.json(&serde_json::json!({ "agency": agency, "public_key": pk, "path": keys.display().to_string() }));
+            } else {
+                ui.heading(&format!("generated key for {agency}"));
+                ui.kv("public key", &pk);
+                ui.kv("path", &keys.display().to_string());
+            }
         }
         Cmd::Mint {
             r#type,
@@ -181,7 +188,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 max_attempts,
                 digraph,
             })?;
-            println!("{}", serde_json::to_string_pretty(&minted)?);
+            if ui.is_json() {
+                ui.json(&minted);
+            } else {
+                ui.heading(&format!("minted {}", minted.name));
+                ui.kv("type", minted.name_type.as_str());
+                ui.kv("agency", &minted.authority_id);
+                ui.kv("sequence", &minted.sequence.to_string());
+                ui.kv("nonce", &minted.nonce.to_string());
+            }
         }
         Cmd::Verify { file, ledger } => {
             let raw = fs::read_to_string(&file)?;
@@ -193,7 +208,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 verify_mint(&minted, pools)?;
             }
-            println!("ok {}", minted.name);
+            if ui.is_json() {
+                ui.json(&serde_json::json!({ "ok": true, "name": minted.name }));
+            } else {
+                ui.status(true, &minted.name);
+            }
         }
         Cmd::Check { name, r#type } => {
             let ty: NameType = r#type.into();
@@ -207,27 +226,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 words,
             };
             let hits = lexicon_pools::bundled_linter().check(&candidate);
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "name": candidate.name,
-                    "ok": hits.iter().all(|h| h.severity != LintSeverity::Reject),
-                    "hits": hits,
-                }))?
-            );
+            let ok = hits.iter().all(|h| h.severity != LintSeverity::Reject);
+            if ui.is_json() {
+                ui.json(&serde_json::json!({ "name": candidate.name, "ok": ok, "hits": hits }));
+            } else {
+                ui.status(ok, &candidate.name);
+                for h in &hits {
+                    let sev = match h.severity {
+                        LintSeverity::Reject => "reject",
+                        LintSeverity::Warn => "warn",
+                    };
+                    ui.line(&format!("    {}  {}  {}", h.rule, sev, h.detail));
+                }
+            }
         }
         Cmd::Ledger { cmd } => match cmd {
             LedgerCmd::Verify => {
                 let led = open_ledger(&cli.data_dir)?;
                 led.verify_chain()?;
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "ok": true,
-                        "events": led.len()?,
-                        "root": hex::encode(led.root()?),
-                    })
-                );
+                let events = led.len()?;
+                let root = hex::encode(led.root()?);
+                if ui.is_json() {
+                    ui.json(&serde_json::json!({ "ok": true, "events": events, "root": root }));
+                } else {
+                    ui.status(true, &format!("{events} events, root 0x{root}"));
+                }
             }
             LedgerCmd::Root { sign, agency } => {
                 let led = open_ledger(&cli.data_dir)?;
@@ -237,20 +260,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .to_ascii_uppercase();
                     let auth = load_auth(&cli.data_dir, &agency)?;
                     let snap = led.sign_root(&auth)?;
-                    println!("{}", serde_json::to_string_pretty(&snap)?);
+                    if ui.is_json() {
+                        ui.json(&snap);
+                    } else {
+                        ui.heading(&format!("signed root 0x{}", snap.root));
+                        ui.kv("events", &snap.leaf_count.to_string());
+                        ui.kv("by", &snap.authority_id);
+                        ui.kv("at", &snap.signed_at);
+                    }
                 } else {
-                    println!(
-                        "{}",
-                        serde_json::json!({
-                            "root": hex::encode(led.root()?),
-                            "events": led.len()?,
-                        })
-                    );
+                    let events = led.len()?;
+                    let root = hex::encode(led.root()?);
+                    if ui.is_json() {
+                        ui.json(&serde_json::json!({ "root": root, "events": events }));
+                    } else {
+                        ui.kv("root", &format!("0x{root}"));
+                        ui.kv("events", &events.to_string());
+                    }
                 }
             }
             LedgerCmd::Names => {
                 let led = open_ledger(&cli.data_dir)?;
-                println!("{}", serde_json::to_string_pretty(&led.issued_names()?)?);
+                let names = led.issued_names()?;
+                if ui.is_json() {
+                    ui.json(&names);
+                } else {
+                    ui.heading(&format!("{} issued names", names.len()));
+                    ui.names(&names);
+                }
             }
         },
         Cmd::Pool { cmd } => match cmd {
@@ -263,40 +300,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let ty = NameType::from(ty);
                         let first = pools.first_pool(ty, &a)?;
                         let second = pools.second_pool(ty);
-                        println!(
-                            "{}",
-                            serde_json::json!({
-                                "agency": a,
-                                "type": ty.as_str(),
-                                "first": first.words.iter().map(|w| &w.word).collect::<Vec<_>>(),
-                                "second": second.map(|p| p.words.iter().map(|w| &w.word).collect::<Vec<_>>()),
-                            })
-                        );
+                        let fw: Vec<String> = first.words.iter().map(|w| w.word.clone()).collect();
+                        let sw: Option<Vec<String>> =
+                            second.map(|p| p.words.iter().map(|w| w.word.clone()).collect());
+                        if ui.is_json() {
+                            ui.json(&serde_json::json!({ "agency": a, "type": ty.as_str(), "first": fw, "second": sw }));
+                        } else {
+                            ui.heading(&format!("agency {a}, type {ty}"));
+                            ui.kv("first", &format!("{} words", fw.len()));
+                            ui.line(&format!("    {}", sample(&fw)));
+                            if let Some(sw) = &sw {
+                                ui.kv("second", &format!("{} words", sw.len()));
+                                ui.line(&format!("    {}", sample(sw)));
+                            }
+                        }
                     } else {
-                        println!(
-                            "{}",
-                            serde_json::json!({
-                                "agency": alloc.id,
-                                "first_letters": alloc.first_letters,
-                                "digraphs": alloc.digraphs,
-                                "sap_designators": alloc.sap_designators,
-                            })
-                        );
+                        if ui.is_json() {
+                            ui.json(&serde_json::json!({
+                                "agency": alloc.id, "first_letters": alloc.first_letters,
+                                "digraphs": alloc.digraphs, "sap_designators": alloc.sap_designators,
+                            }));
+                        } else {
+                            ui.heading(&format!("agency {}", alloc.id));
+                            ui.kv("first letters", &alloc.first_letters);
+                            ui.kv("digraphs", &alloc.digraphs.join(", "));
+                            ui.kv("sap", &alloc.sap_designators.join(", "));
+                        }
                     }
                 } else {
-                    println!(
-                        "{}",
-                        serde_json::json!({
+                    if ui.is_json() {
+                        ui.json(&serde_json::json!({
                             "pool_id": pools.id,
-                            "agencies": pools.agencies.iter().map(|a| &a.id).collect::<Vec<_>>(),
+                            "agencies": pools.agencies.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
                             "nickname_first": pools.nickname_first.len(),
                             "nickname_second": pools.nickname_second.len(),
                             "codeword": pools.codeword.len(),
                             "cryptonym_word": pools.cryptonym_word.len(),
                             "exercise_first": pools.exercise_first.len(),
                             "exercise_second": pools.exercise_second.len(),
-                        })
-                    );
+                        }));
+                    } else {
+                        ui.heading(&format!("pool {}", pools.id));
+                        ui.kv("agencies", &pools.agencies.len().to_string());
+                        ui.kv("nickname_first", &pools.nickname_first.len().to_string());
+                        ui.kv("nickname_second", &pools.nickname_second.len().to_string());
+                        ui.kv("codeword", &pools.codeword.len().to_string());
+                        ui.kv("cryptonym_word", &pools.cryptonym_word.len().to_string());
+                        ui.kv("exercise_first", &pools.exercise_first.len().to_string());
+                        ui.kv("exercise_second", &pools.exercise_second.len().to_string());
+                    }
                 }
             }
         },
@@ -305,20 +357,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             agency,
             reason,
         } => {
-            retire_or_revoke(&cli.data_dir, &agency, &name, &reason, false)?;
+            retire_or_revoke(&ui, &cli.data_dir, &agency, &name, &reason, false)?;
         }
         Cmd::Revoke {
             name,
             agency,
             reason,
         } => {
-            retire_or_revoke(&cli.data_dir, &agency, &name, &reason, true)?;
+            retire_or_revoke(&ui, &cli.data_dir, &agency, &name, &reason, true)?;
         }
     }
     Ok(())
 }
 
 fn retire_or_revoke(
+    ui: &Ui,
     data: &Path,
     agency: &str,
     name: &str,
@@ -342,21 +395,32 @@ fn retire_or_revoke(
         }
     };
     let seq = led.append(Event::new(kind), &auth)?;
-    println!(
-        "{}",
-        serde_json::json!({ "name": normalize(name), "seq": seq })
-    );
+    let norm = normalize(name);
+    if ui.is_json() {
+        ui.json(&serde_json::json!({ "name": norm, "seq": seq }));
+    } else {
+        let verb = if revoke { "revoked" } else { "retired" };
+        ui.status(true, &format!("{verb} {norm} (seq {seq})"));
+    }
     Ok(())
 }
 
 fn keys_dir(data: &Path) -> PathBuf {
     data.join("keys")
 }
-
 fn load_auth(data: &Path, agency: &str) -> Result<Authority, Error> {
     Authority::load(&keys_dir(data), agency)
 }
-
 fn open_ledger(data: &Path) -> Result<Ledger, Error> {
     Ledger::open(&data.join("ledger.sqlite"))
+}
+
+fn sample(words: &[String]) -> String {
+    let n = words.len().min(8);
+    let head: Vec<&str> = words.iter().take(n).map(String::as_str).collect();
+    let mut s = head.join(", ");
+    if words.len() > n {
+        s.push_str(", ...");
+    }
+    s
 }

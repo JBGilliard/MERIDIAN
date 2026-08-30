@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::sig::{SigAlg, Signature, Signer};
 use crate::vrf::{self, VrfOutput, VrfProof};
-use ed25519_dalek::{SigningKey};
+use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 use std::fs;
 use std::path::Path;

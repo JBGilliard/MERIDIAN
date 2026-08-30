@@ -41,6 +41,8 @@ cargo build -p lexicon-cli
 
 Keys and the ledger go in `.meridian/`. Use `--data-dir` to change this path.
 
+Add `--json` to any command for stable machine output (scripts, CI). The default is human-readable.
+
 End-to-end walkthrough: `scripts/demo.sh`.
 
 ## Signatures

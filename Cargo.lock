@@ -414,6 +414,7 @@ dependencies = [
  "hex",
  "lexicon-core",
  "lexicon-pools",
+ "serde",
  "serde_json",
 ]
 

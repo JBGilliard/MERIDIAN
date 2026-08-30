@@ -396,10 +396,16 @@ pub struct RejectListRule {
 }
 
 impl RejectListRule {
-    pub fn new(rule_name: &'static str, words: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn new(
+        rule_name: &'static str,
+        words: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         Self {
             rule_name,
-            words: words.into_iter().map(|w| w.into().to_ascii_uppercase()).collect(),
+            words: words
+                .into_iter()
+                .map(|w| w.into().to_ascii_uppercase())
+                .collect(),
         }
     }
 }

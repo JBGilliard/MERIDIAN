@@ -229,11 +229,15 @@ mod tests {
         let pools = bundled();
         let engine = bundled_linter();
         // Notable historical names must not be mintable as codewords...
-        for w in ["CORONA", "PHOENIX", "MKULTRA", "RAWHIDE", "LANCER", "STARGATE"] {
+        for w in [
+            "CORONA", "PHOENIX", "MKULTRA", "RAWHIDE", "LANCER", "STARGATE",
+        ] {
             assert!(engine.rejects_word(w).is_some(), "{w} not rejected");
         }
         // ...and must not survive pool curation.
-        for w in ["CORONA", "PHOENIX", "RAWHIDE", "LANCER", "MONGOOSE", "EAGLE"] {
+        for w in [
+            "CORONA", "PHOENIX", "RAWHIDE", "LANCER", "MONGOOSE", "EAGLE",
+        ] {
             assert!(
                 !pools.codeword.words.iter().any(|p| p.word == w),
                 "{w} leaked into codeword pool"
@@ -252,7 +256,9 @@ mod tests {
         let pools = bundled();
         let engine = bundled_linter();
         // Weapon systems are real words that DO enter the crossword pool.
-        for w in ["PATRIOT", "JAVELIN", "STINGER", "TOMAHAWK", "PREDATOR", "REAPER"] {
+        for w in [
+            "PATRIOT", "JAVELIN", "STINGER", "TOMAHAWK", "PREDATOR", "REAPER",
+        ] {
             assert!(engine.rejects_word(w).is_some(), "{w} not rejected");
             assert!(
                 !pools.codeword.words.iter().any(|p| p.word == w),
@@ -261,7 +267,9 @@ mod tests {
         }
         // INT disciplines / combatant commands aren't dictionary words but
         // must be rejected on compose (defense-in-depth for future pools).
-        for w in ["HUMINT", "SIGINT", "COMINT", "OSINT", "MASINT", "IMINT", "CENTCOM", "CONUS"] {
+        for w in [
+            "HUMINT", "SIGINT", "COMINT", "OSINT", "MASINT", "IMINT", "CENTCOM", "CONUS",
+        ] {
             assert!(engine.rejects_word(w).is_some(), "{w} not rejected");
         }
         // The reject set is the full wikipedia sweep, not a sample.

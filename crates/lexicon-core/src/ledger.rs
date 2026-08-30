@@ -353,7 +353,8 @@ mod tests {
         assert_eq!(seq, 1);
         assert!(led.is_taken("granite  spire").unwrap());
         led.verify_chain().unwrap();
-        led.verify_event_signature(seq, auth.public_key().as_slice()).unwrap();
+        led.verify_event_signature(seq, auth.public_key().as_slice())
+            .unwrap();
         let proof = led.inclusion_proof(seq).unwrap();
         assert!(merkle::verify_inclusion(&proof));
     }

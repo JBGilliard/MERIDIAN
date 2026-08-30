@@ -16,25 +16,25 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 echo "== keygen"
-"$BIN" --data-dir "$DATA" keygen --agency DIA
-"$BIN" --data-dir "$DATA" keygen --agency CIA
+"$BIN" --data-dir "$DATA" keygen --agency DIA --json
+"$BIN" --data-dir "$DATA" keygen --agency CIA --json
 
 echo "== mint 12 nicknames + 4 cryptonyms + 2 code words"
 names=()
 for _ in $(seq 1 12); do
-  json="$("$BIN" --data-dir "$DATA" mint --type nickname --agency DIA)"
+  json="$("$BIN" --data-dir "$DATA" mint --type nickname --agency DIA --json)"
   name="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
   names+=("$name")
   printf '%s\n' "$json" > "$DATA/${name// /_}.json"
 done
 for _ in $(seq 1 4); do
-  json="$("$BIN" --data-dir "$DATA" mint --type cryptonym --agency CIA --digraph AE)"
+  json="$("$BIN" --data-dir "$DATA" mint --type cryptonym --agency CIA --digraph AE --json)"
   name="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
   names+=("$name")
   printf '%s\n' "$json" > "$DATA/${name}.json"
 done
 for _ in $(seq 1 2); do
-  json="$("$BIN" --data-dir "$DATA" mint --type codeword --agency DIA)"
+  json="$("$BIN" --data-dir "$DATA" mint --type codeword --agency DIA --json)"
   name="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["name"])')"
   names+=("$name")
   printf '%s\n' "$json" > "$DATA/${name}.json"
@@ -58,6 +58,6 @@ echo "== ledger"
 "$BIN" --data-dir "$DATA" ledger verify
 
 echo "== linter rejects BLUE SPOON"
-"$BIN" check --name "BLUE SPOON" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ok"] is False, d'
+"$BIN" check --name "BLUE SPOON" --json | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["ok"] is False, d'
 
 echo "ok: ${#names[@]} unique names, all verified"
