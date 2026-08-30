@@ -3,56 +3,99 @@
     {
       "id": "CIA",
       "first_letters": "ABC",
-      "digraphs": ["AE", "AM", "ZR", "GP", "KU", "MK", "LI", "JM", "HT", "MH"],
-      "sap_designators": ["HCS", "KDK"]
-    },
-    {
-      "id": "NSA",
-      "first_letters": "DEF",
-      "digraphs": [],
-      "sap_designators": ["SI", "TK", "G"]
-    },
-    {
-      "id": "DIA",
-      "first_letters": "GHI",
-      "digraphs": [],
-      "sap_designators": ["SI", "TK"]
-    },
-    {
-      "id": "FBI",
-      "first_letters": "JKL",
-      "digraphs": [],
-      "sap_designators": ["HCS"]
+      "digraphs": [
+        "AE",
+        "AM",
+        "ZR",
+        "GP",
+        "KU",
+        "MK",
+        "LI",
+        "JM",
+        "HT",
+        "MH"
+      ],
+      "sap_designators": [
+        "HCS",
+        "KDK"
+      ]
     },
     {
       "id": "DHS",
       "first_letters": "MNO",
       "digraphs": [],
-      "sap_designators": ["HCS"]
+      "sap_designators": [
+        "HCS"
+      ]
     },
     {
-      "id": "INR",
-      "first_letters": "PQR",
+      "id": "DIA",
+      "first_letters": "GHI",
       "digraphs": [],
-      "sap_designators": ["SI"]
-    },
-    {
-      "id": "NCTC",
-      "first_letters": "STU",
-      "digraphs": [],
-      "sap_designators": ["HCS"]
-    },
-    {
-      "id": "ODNI",
-      "first_letters": "VWX",
-      "digraphs": [],
-      "sap_designators": ["SI"]
+      "sap_designators": [
+        "SI",
+        "TK"
+      ]
     },
     {
       "id": "DOW",
       "first_letters": "YZ",
       "digraphs": [],
-      "sap_designators": ["TK"]
+      "sap_designators": [
+        "TK"
+      ]
+    },
+    {
+      "id": "FBI",
+      "first_letters": "JKL",
+      "digraphs": [],
+      "sap_designators": [
+        "HCS"
+      ]
+    },
+    {
+      "id": "INR",
+      "first_letters": "PQR",
+      "digraphs": [],
+      "sap_designators": [
+        "SI"
+      ]
+    },
+    {
+      "id": "NCTC",
+      "first_letters": "STU",
+      "digraphs": [],
+      "sap_designators": [
+        "HCS"
+      ]
+    },
+    {
+      "id": "NSA",
+      "first_letters": "DEF",
+      "digraphs": [],
+      "sap_designators": [
+        "SI",
+        "TK",
+        "G"
+      ]
+    },
+    {
+      "id": "ODNI",
+      "first_letters": "VWX",
+      "digraphs": [],
+      "sap_designators": [
+        "SI"
+      ]
+    },
+    {
+      "id": "USAF",
+      "first_letters": "ABCDE",
+      "digraphs": [
+        ""
+      ],
+      "sap_designators": [
+        "QSV"
+      ]
     }
   ]
 }
