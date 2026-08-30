@@ -1,9 +1,13 @@
 //! CAPCO classification marking. Typed, not a free-form string.
 //! Travels with the `Issued` event (signed, hashed). The ledger
 //! container stays unclassified; the marking is name metadata.
+//!
+//! Display order is CLASSIFICATION // SCI // SAR // AEA // FGI // DISSEM.
+//! SCI is a bare designator (TK, not SCI/TK). SAP is SAR-<pid>[-<compid>].
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fmt;
 use std::sync::OnceLock;
 
 // Same files the accreditor replaces; rebuild picks them up.
@@ -36,6 +40,15 @@ impl Level {
             Self::TopSecret => "TS",
         }
     }
+    pub fn banner_str(self) -> &'static str {
+        match self {
+            Self::Unclassified => "UNCLASSIFIED",
+            Self::Cui => "CUI",
+            Self::Confidential => "CONFIDENTIAL",
+            Self::Secret => "SECRET",
+            Self::TopSecret => "TOP SECRET",
+        }
+    }
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_uppercase().as_str() {
             "U" | "UNCLASS" | "UNCLASSIFIED" => Some(Self::Unclassified),
@@ -57,6 +70,9 @@ pub enum Caveat {
     Rsen,
     RelTo { countries: Vec<String> },
     Hvsaco,
+    // Waived SAP. Not a dissemination control; derived from SapType::Waived,
+    // never operator-entered as a free caveat.
+    Waived,
     Other { token: String },
 }
 
@@ -69,82 +85,139 @@ impl Caveat {
             Self::Rsen => 4,
             Self::RelTo { .. } => 5,
             Self::Hvsaco => 6,
+            Self::Waived => 7,
             Self::Other { .. } => 255,
         }
     }
     fn detail(&self) -> String {
         match self {
-            Self::Noforn | Self::Orcon | Self::Fisa | Self::Rsen | Self::Hvsaco => String::new(),
+            Self::Noforn | Self::Orcon | Self::Fisa | Self::Rsen | Self::Hvsaco | Self::Waived => {
+                String::new()
+            }
             Self::RelTo { countries } => countries.join(","),
             Self::Other { token } => token.clone(),
         }
     }
-    fn display(&self) -> String {
+    fn display(&self, banner: bool) -> String {
         match self {
-            Self::Noforn => "NOFORN".into(),
-            Self::Orcon => "ORCON".into(),
+            Self::Noforn => {
+                if banner {
+                    "NOFORN".into()
+                } else {
+                    "NF".into()
+                }
+            }
+            Self::Orcon => {
+                if banner {
+                    "ORCON".into()
+                } else {
+                    "OC".into()
+                }
+            }
             Self::Fisa => "FISA".into(),
-            Self::Rsen => "RSEN".into(),
-            Self::RelTo { countries } => format!("REL TO {}", countries.join(",")),
+            Self::Rsen => {
+                if banner {
+                    "RSEN".into()
+                } else {
+                    "RS".into()
+                }
+            }
+            Self::RelTo { countries } => {
+                let list = countries.join(",");
+                if banner {
+                    format!("REL TO {list}")
+                } else {
+                    format!("REL {list}")
+                }
+            }
             Self::Hvsaco => "HVSACO".into(),
+            Self::Waived => "WAIVED".into(),
             Self::Other { token } => token.clone(),
         }
     }
-    fn parse(seg: &str) -> Option<Self> {
+    pub(crate) fn parse(seg: &str) -> Option<Self> {
         let u = seg.trim();
-        match u.to_ascii_uppercase().as_str() {
-            "NOFORN" => Some(Self::Noforn),
-            "ORCON" => Some(Self::Orcon),
+        let s = u.to_ascii_uppercase();
+        match s.as_str() {
+            "NOFORN" | "NF" => Some(Self::Noforn),
+            "ORCON" | "OC" => Some(Self::Orcon),
             "FISA" => Some(Self::Fisa),
-            "RSEN" => Some(Self::Rsen),
+            "RSEN" | "RS" => Some(Self::Rsen),
             "HVSACO" => Some(Self::Hvsaco),
-            s if s.starts_with("REL TO ") => Some(Self::RelTo {
-                countries: s["REL TO ".len()..]
-                    .split(',')
-                    .map(|c| c.trim().to_ascii_uppercase())
-                    .filter(|c| !c.is_empty())
-                    .collect(),
+            "WAIVED" => Some(Self::Waived),
+            "REL TO" | "REL" => Some(Self::RelTo {
+                countries: Vec::new(),
             }),
-            s if is_other_caveat(s) => Some(Self::Other { token: s.into() }),
+            s if s.starts_with("REL TO ") => Some(Self::RelTo {
+                countries: parse_rel_countries(&s["REL TO ".len()..]),
+            }),
+            s if s.starts_with("REL ") => Some(Self::RelTo {
+                countries: parse_rel_countries(&s["REL ".len()..]),
+            }),
             _ => None,
         }
     }
 }
 
-/// Dissemination-control shaped, not a compartment (`SCI/…`).
+fn parse_rel_countries(s: &str) -> Vec<String> {
+    s.split(',')
+        .map(|c| c.trim().to_ascii_uppercase())
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// Dissemination-control shaped, not SCI/SAR/AEA/FGI.
 fn is_other_caveat(s: &str) -> bool {
-    if s.is_empty() || s.contains('/') || CompartmentKind::parse(s).is_some() {
+    if s.is_empty() || s.contains('/') {
+        return false;
+    }
+    if s.eq_ignore_ascii_case("SCI")
+        || s.eq_ignore_ascii_case("SAP")
+        || s.eq_ignore_ascii_case("SAR")
+        || s.eq_ignore_ascii_case("FGI")
+        || s.eq_ignore_ascii_case("WAIVED")
+    {
+        return false;
+    }
+    let up = s.to_ascii_uppercase();
+    if up.starts_with("SAR-") || up.starts_with("FGI-") {
+        return false;
+    }
+    if CompartmentKind::parse(s).is_some() {
         return false;
     }
     s.bytes().all(|b| b.is_ascii_alphabetic() || b == b'-')
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CompartmentKind {
     Sci,
     Sap,
     RdFrd,
     Cnwdi,
+    Fgi,
     Other,
 }
 
 impl CompartmentKind {
-    fn tag(&self) -> u8 {
+    fn tag(self) -> u8 {
         match self {
             Self::Sci => 1,
             Self::Sap => 2,
             Self::RdFrd => 3,
             Self::Cnwdi => 4,
+            Self::Fgi => 5,
             Self::Other => 255,
         }
     }
-    fn display(&self) -> &'static str {
+    fn display(self) -> &'static str {
         match self {
             Self::Sci => "SCI",
             Self::Sap => "SAP",
             Self::RdFrd => "RD-FRD",
             Self::Cnwdi => "CNWDI",
+            Self::Fgi => "FGI",
             Self::Other => "OTHER",
         }
     }
@@ -154,7 +227,16 @@ impl CompartmentKind {
             "SAP" => Some(Self::Sap),
             "RD-FRD" | "RDFRD" => Some(Self::RdFrd),
             "CNWDI" => Some(Self::Cnwdi),
+            "FGI" => Some(Self::Fgi),
             _ => None,
+        }
+    }
+    fn slot(self) -> Slot {
+        match self {
+            Self::Sci => Slot::Sci,
+            Self::Sap => Slot::Sar,
+            Self::RdFrd | Self::Cnwdi | Self::Other => Slot::Aea,
+            Self::Fgi => Slot::Fgi,
         }
     }
 }
@@ -193,13 +275,23 @@ impl SciRegister {
         R.get_or_init(|| Self::from_json(SCI_REGISTER_JSON).expect("sci_register.json"))
     }
 
+    pub fn is_sci(&self, designator: &str) -> bool {
+        !designator.is_empty() && self.sci.contains(&designator.to_ascii_uppercase())
+    }
+
     pub fn allows(&self, kind: &CompartmentKind, designator: &str) -> bool {
         if designator.is_empty() {
             return true;
         }
+        let d = designator.to_ascii_uppercase();
         match kind {
-            CompartmentKind::Sci => self.sci.contains(designator),
-            CompartmentKind::Sap => self.sap.contains(designator),
+            CompartmentKind::Sci => self.sci.contains(&d),
+            CompartmentKind::Sap => {
+                self.sap.contains(&d)
+                    || d.split_once('-')
+                        .map(|(pid, _)| self.sap.contains(pid))
+                        .unwrap_or(false)
+            }
             _ => true,
         }
     }
@@ -267,7 +359,7 @@ impl Marking {
     }
 
     /// Container marking: higher level, caveats and compartments unioned.
-    /// `max(TS//SCI/TK, CUI) = TS//SCI/TK` — upgraded by aggregation.
+    /// `max(TS//TK, CUI) = TS//TK` — upgraded by aggregation.
     pub fn max(&self, other: &Marking) -> Marking {
         let level = self.level.max(other.level);
         let mut caveats = self.caveats.clone();
@@ -307,65 +399,186 @@ impl Marking {
             .collect()
     }
 
+    /// Portion mark: abbreviated level and dissem (TS, NF). CLI parenthesizes.
+    pub fn display_portion(&self) -> String {
+        self.render(false)
+    }
+
+    /// Banner mark: spelled-out level and full dissem names (TOP SECRET, NOFORN).
+    pub fn display_banner(&self) -> String {
+        self.render(true)
+    }
+
+    fn render(&self, banner: bool) -> String {
+        let mut parts = vec![if banner {
+            self.level.banner_str().to_string()
+        } else {
+            self.level.as_str().to_string()
+        }];
+
+        let sci: Vec<&str> = self
+            .compartments
+            .iter()
+            .filter(|c| c.kind == CompartmentKind::Sci && !c.designator.is_empty())
+            .map(|c| c.designator.as_str())
+            .collect();
+        if !sci.is_empty() {
+            parts.push(sci.join(","));
+        }
+
+        for c in &self.compartments {
+            if c.kind != CompartmentKind::Sap {
+                continue;
+            }
+            if c.designator.is_empty() {
+                parts.push("SAR".into());
+            } else {
+                parts.push(format!("SAR-{}", c.designator));
+            }
+        }
+
+        for c in &self.compartments {
+            match c.kind {
+                CompartmentKind::RdFrd | CompartmentKind::Cnwdi | CompartmentKind::Other => {
+                    if c.designator.is_empty() {
+                        parts.push(c.kind.display().to_string());
+                    } else {
+                        parts.push(format!("{}/{}", c.kind.display(), c.designator));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for c in &self.compartments {
+            if c.kind != CompartmentKind::Fgi {
+                continue;
+            }
+            if c.designator.is_empty() {
+                parts.push("FGI".into());
+            } else {
+                parts.push(format!("FGI-{}", c.designator));
+            }
+        }
+
+        for c in &self.caveats {
+            parts.push(c.display(banner));
+        }
+        parts.join("//")
+    }
+
+    /// Structural checks: no bare SCI, SAR uses hyphen, SCI/SAR in register.
+    /// CAPCO order is a parse concern; Display always emits it.
+    pub fn validate(&self, sci: &SciRegister) -> Result<(), String> {
+        for c in &self.compartments {
+            match c.kind {
+                CompartmentKind::Sci => {
+                    if c.designator.is_empty() {
+                        return Err(
+                            "bare SCI token is not a valid control; use the designator (TK, not SCI)"
+                                .into(),
+                        );
+                    }
+                    if !sci.allows(&c.kind, &c.designator) {
+                        return Err(format!(
+                            "unknown SCI designator '{}'; not in sci_register",
+                            c.designator
+                        ));
+                    }
+                }
+                CompartmentKind::Sap => {
+                    if c.designator.is_empty() {
+                        return Err("SAR requires a program designator (SAR-<pid>)".into());
+                    }
+                    if c.designator.contains('/') {
+                        return Err(format!(
+                            "SAR uses hyphen not slash: SAR-{}",
+                            c.designator.replace('/', "-")
+                        ));
+                    }
+                    if !sci.allows(&c.kind, &c.designator) {
+                        return Err(format!(
+                            "unknown SAR designator '{}'; not in sci_register",
+                            c.designator
+                        ));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for c in &self.caveats {
+            if let Caveat::RelTo { countries } = c {
+                if countries.is_empty() {
+                    return Err("REL TO requires at least one ISO 3166-1 alpha-3 country".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn parse_with(
         s: &str,
         sci: &SciRegister,
         countries: &CountryRegister,
     ) -> Result<Self, String> {
-        Self::parse_inner(s, Some(sci), Some(countries))
+        Self::parse_inner(s, Some(sci), Some(countries), true)
     }
 
     /// Rows already on the ledger. Mint-time register does not apply —
     /// a later sci_register must not make `ledger verify` fail.
+    /// Accepts legacy `SCI/<dg>` / `SAP/<dg>` and out-of-order tokens.
     pub fn from_stored(s: &str) -> Result<Self, String> {
-        Self::parse_inner(s, None, None)
+        Self::parse_inner(s, None, None, false)
     }
 
     fn parse_inner(
         s: &str,
         sci: Option<&SciRegister>,
         countries: Option<&CountryRegister>,
+        strict_order: bool,
     ) -> Result<Self, String> {
         let s = s.trim();
+        let s = s
+            .strip_prefix('(')
+            .and_then(|x| x.strip_suffix(')'))
+            .unwrap_or(s)
+            .trim();
         if s.is_empty() {
             return Ok(Self::default());
         }
         let segs: Vec<&str> = s.split("//").collect();
         let level = Level::parse(segs[0])
             .ok_or_else(|| format!("unknown classification level '{}'", segs[0]))?;
+        let kind_sci = sci.unwrap_or(SciRegister::bundled());
         let mut caveats = Vec::new();
         let mut compartments = Vec::new();
+        let mut last_slot = Slot::Sci;
+        let mut seen = false;
         for seg in &segs[1..] {
-            if let Some(c) = Caveat::parse(seg) {
-                caveats.push(c);
-                continue;
+            let parsed = parse_token(seg, kind_sci)?;
+            let slot = parsed.slot();
+            if strict_order && seen && slot < last_slot {
+                return Err(format!(
+                    "CAPCO order is CLASSIFICATION // SCI // SAR // AEA // FGI // DISSEM; '{seg}' is out of order"
+                ));
             }
-            if let Some((kind, dgs)) = parse_compartment(seg) {
-                for dg in dgs {
-                    compartments.push(Compartment {
-                        kind: kind.clone(),
-                        designator: dg,
-                    });
-                }
-                continue;
+            last_slot = slot;
+            seen = true;
+            match parsed {
+                Parsed::Comps(cs) => compartments.extend(cs),
+                Parsed::Caveat(c) => caveats.push(c),
             }
-            return Err(format!(
-                "unknown CAPCO token '{seg}'; supported: NOFORN, ORCON, FISA, RSEN, HVSACO, REL TO <ISO 3166-1 alpha-3>, SCI/<dg>, SAP/<dg>, RD-FRD, CNWDI"
-            ));
         }
+        let marking = Marking {
+            level,
+            caveats,
+            compartments,
+        };
         if let Some(sci) = sci {
-            for c in &compartments {
-                if !sci.allows(&c.kind, &c.designator) {
-                    let kind = c.kind.display();
-                    return Err(format!(
-                        "unknown {kind} designator '{}'; not in sci_register",
-                        c.designator
-                    ));
-                }
-            }
+            marking.validate(sci)?;
         }
         if let Some(countries) = countries {
-            for c in &caveats {
+            for c in &marking.caveats {
                 if let Caveat::RelTo { countries: list } = c {
                     if list.is_empty() {
                         return Err(
@@ -382,43 +595,13 @@ impl Marking {
                 }
             }
         }
-        Ok(Marking {
-            level,
-            caveats,
-            compartments,
-        })
+        Ok(marking)
     }
 }
 
-impl std::fmt::Display for Marking {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut parts = vec![self.level.as_str().to_string()];
-        for c in &self.caveats {
-            parts.push(c.display());
-        }
-        // CAPCO: same-kind designators comma-separated under one prefix
-        // (SCI/TK,HCS), not repeated per subcompartment.
-        let mut by_kind: Vec<(CompartmentKind, Vec<String>)> = Vec::new();
-        for c in &self.compartments {
-            if let Some(entry) = by_kind.iter_mut().find(|(k, _)| *k == c.kind) {
-                entry.1.push(c.designator.clone());
-            } else {
-                by_kind.push((c.kind.clone(), vec![c.designator.clone()]));
-            }
-        }
-        for (kind, dgs) in &by_kind {
-            let nonempty: Vec<&str> = dgs
-                .iter()
-                .filter(|d| !d.is_empty())
-                .map(String::as_str)
-                .collect();
-            if nonempty.is_empty() {
-                parts.push(kind.display().to_string());
-            } else {
-                parts.push(format!("{}/{}", kind.display(), nonempty.join(",")));
-            }
-        }
-        write!(f, "{}", parts.join("//"))
+impl fmt::Display for Marking {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.display_portion())
     }
 }
 
@@ -430,23 +613,147 @@ impl std::str::FromStr for Marking {
     }
 }
 
-fn parse_compartment(seg: &str) -> Option<(CompartmentKind, Vec<String>)> {
-    if let Some((kind, dg)) = seg.split_once('/') {
-        let kind = CompartmentKind::parse(kind)?;
-        let dgs: Vec<String> = dg
-            .split(',')
-            .map(|d| d.trim().to_ascii_uppercase())
-            .filter(|d| !d.is_empty())
-            .collect();
-        if dgs.is_empty() {
-            return None;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Slot {
+    Sci = 1,
+    Sar = 2,
+    Aea = 3,
+    Fgi = 4,
+    Dissem = 5,
+}
+
+enum Parsed {
+    Comps(Vec<Compartment>),
+    Caveat(Caveat),
+}
+
+impl Parsed {
+    fn slot(&self) -> Slot {
+        match self {
+            Self::Comps(cs) => cs.first().map(|c| c.kind.slot()).unwrap_or(Slot::Sci),
+            Self::Caveat(_) => Slot::Dissem,
         }
-        return Some((kind, dgs));
     }
-    if let Some(kind) = CompartmentKind::parse(seg) {
-        return Some((kind, vec![String::new()]));
+}
+
+fn parse_token(seg: &str, kind_sci: &SciRegister) -> Result<Parsed, String> {
+    let u = seg.trim();
+    if u.is_empty() {
+        return Err("empty CAPCO token".into());
     }
-    None
+    let up = u.to_ascii_uppercase();
+
+    if up == "SAR" {
+        return Err("SAR requires a program designator (SAR-<pid>)".into());
+    }
+    if let Some(dg) = up.strip_prefix("SAR-") {
+        if dg.is_empty() {
+            return Err("SAR requires a program designator (SAR-<pid>)".into());
+        }
+        if dg.contains('/') {
+            return Err(format!(
+                "SAR uses hyphen not slash: SAR-{}",
+                dg.replace('/', "-")
+            ));
+        }
+        return Ok(Parsed::Comps(vec![Compartment {
+            kind: CompartmentKind::Sap,
+            designator: dg.into(),
+        }]));
+    }
+
+    if up == "FGI" {
+        return Ok(Parsed::Comps(vec![Compartment {
+            kind: CompartmentKind::Fgi,
+            designator: String::new(),
+        }]));
+    }
+    if let Some(dg) = up.strip_prefix("FGI-").or_else(|| up.strip_prefix("FGI/")) {
+        if dg.is_empty() {
+            return Ok(Parsed::Comps(vec![Compartment {
+                kind: CompartmentKind::Fgi,
+                designator: String::new(),
+            }]));
+        }
+        return Ok(Parsed::Comps(vec![Compartment {
+            kind: CompartmentKind::Fgi,
+            designator: dg.into(),
+        }]));
+    }
+
+    if let Some((kind_s, rest)) = up.split_once('/') {
+        if let Some(kind) = CompartmentKind::parse(kind_s) {
+            let dgs: Vec<String> = rest
+                .split(',')
+                .map(|d| d.trim().to_ascii_uppercase())
+                .filter(|d| !d.is_empty())
+                .collect();
+            if dgs.is_empty() {
+                return Err(format!("missing designator on {}", kind.display()));
+            }
+            if kind == CompartmentKind::Sci && dgs.iter().any(|d| d.is_empty()) {
+                return Err(
+                    "bare SCI token is not a valid control; use the designator (TK, not SCI)"
+                        .into(),
+                );
+            }
+            return Ok(Parsed::Comps(
+                dgs.into_iter()
+                    .map(|designator| Compartment { kind, designator })
+                    .collect(),
+            ));
+        }
+    }
+
+    if let Some(kind) = CompartmentKind::parse(&up) {
+        match kind {
+            CompartmentKind::Sci => {
+                return Err(
+                    "bare SCI token is not a valid control; use the designator (TK, not SCI)"
+                        .into(),
+                );
+            }
+            CompartmentKind::Sap => {
+                return Err("use SAR-<pid>, not a bare SAP token".into());
+            }
+            CompartmentKind::RdFrd | CompartmentKind::Cnwdi => {
+                return Ok(Parsed::Comps(vec![Compartment {
+                    kind,
+                    designator: String::new(),
+                }]));
+            }
+            CompartmentKind::Fgi | CompartmentKind::Other => {}
+        }
+    }
+
+    if let Some(c) = Caveat::parse(u) {
+        return Ok(Parsed::Caveat(c));
+    }
+
+    let parts: Vec<String> = up
+        .split(',')
+        .map(|p| p.trim().to_ascii_uppercase())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !parts.is_empty() && parts.iter().all(|p| kind_sci.is_sci(p)) {
+        return Ok(Parsed::Comps(
+            parts
+                .into_iter()
+                .map(|designator| Compartment {
+                    kind: CompartmentKind::Sci,
+                    designator,
+                })
+                .collect(),
+        ));
+    }
+
+    if is_other_caveat(&up) {
+        return Ok(Parsed::Caveat(Caveat::Other { token: up }));
+    }
+
+    Err(format!(
+        "unknown CAPCO token '{seg}'; supported: NOFORN/NF, ORCON/OC, FISA, RSEN/RS, HVSACO, REL TO <ISO 3166-1 alpha-3>, bare SCI designators, SAR-<pid>[-<compid>], FGI, RD-FRD, CNWDI (legacy SCI/<dg>, SAP/<dg> accepted)"
+    ))
 }
 
 #[cfg(test)]
@@ -454,8 +761,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_and_display() {
-        let m: Marking = "TS//NOFORN//SCI/TK".parse().unwrap();
+    fn parse_and_display_portion() {
+        let m: Marking = "TS//TK//NOFORN".parse().unwrap();
         assert_eq!(m.level, Level::TopSecret);
         assert_eq!(m.caveats, vec![Caveat::Noforn]);
         assert_eq!(
@@ -465,7 +772,42 @@ mod tests {
                 designator: "TK".into()
             }]
         );
-        assert_eq!(m.to_string(), "TS//NOFORN//SCI/TK");
+        assert_eq!(m.to_string(), "TS//TK//NF");
+        assert_eq!(m.display_portion(), "TS//TK//NF");
+    }
+
+    #[test]
+    fn banner_spells_out_level_and_dissem() {
+        let m: Marking = "TS//TK//NF".parse().unwrap();
+        assert_eq!(m.display_banner(), "TOP SECRET//TK//NOFORN");
+        let s: Marking = "S//REL TO USA,GBR".parse().unwrap();
+        assert_eq!(s.display_banner(), "SECRET//REL TO USA,GBR");
+        assert_eq!(s.display_portion(), "S//REL USA,GBR");
+        let u: Marking = "U".parse().unwrap();
+        assert_eq!(u.display_banner(), "UNCLASSIFIED");
+    }
+
+    #[test]
+    fn parse_portion_abbreviations() {
+        let m: Marking = "TS//TK//NF".parse().unwrap();
+        assert_eq!(m.caveats, vec![Caveat::Noforn]);
+        let o: Marking = "S//OC".parse().unwrap();
+        assert_eq!(o.caveats, vec![Caveat::Orcon]);
+        let r: Marking = "S//RS".parse().unwrap();
+        assert_eq!(r.caveats, vec![Caveat::Rsen]);
+        let rel: Marking = "S//REL USA,GBR".parse().unwrap();
+        assert_eq!(
+            rel.caveats,
+            vec![Caveat::RelTo {
+                countries: vec!["USA".into(), "GBR".into()]
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_parenthesized_portion() {
+        let m: Marking = "(TS//TK//NF)".parse().unwrap();
+        assert_eq!(m.to_string(), "TS//TK//NF");
     }
 
     #[test]
@@ -477,7 +819,7 @@ mod tests {
                 countries: vec!["USA".into(), "GBR".into()]
             }]
         );
-        assert_eq!(m.to_string(), "S//REL TO USA,GBR");
+        assert_eq!(m.to_string(), "S//REL USA,GBR");
         let fvey: Marking = "S//REL TO FVEY".parse().unwrap();
         assert_eq!(
             fvey.caveats,
@@ -489,11 +831,33 @@ mod tests {
 
     #[test]
     fn parse_hvsaco() {
-        let m: Marking = "TS//HVSACO//SCI/TK".parse().unwrap();
+        let m: Marking = "TS//TK//HVSACO".parse().unwrap();
         assert_eq!(m.caveats, vec![Caveat::Hvsaco]);
-        assert_eq!(m.to_string(), "TS//HVSACO//SCI/TK");
+        assert_eq!(m.to_string(), "TS//TK//HVSACO");
         let bytes = m.canonical_bytes();
         assert_eq!(bytes[2], 6);
+    }
+
+    #[test]
+    fn parse_waived() {
+        let m: Marking = "TS//SAR-QSV//WAIVED//NOFORN".parse().unwrap();
+        assert!(m.caveats.contains(&Caveat::Waived));
+        assert!(m.caveats.contains(&Caveat::Noforn));
+        assert_eq!(m.to_string(), "TS//SAR-QSV//WAIVED//NF");
+        // WAIVED is typed, not an Other caveat that warns.
+        assert!(m.warnings().is_empty());
+        // Canonical tag is distinct from HVSACO (6) — no collision.
+        let waived = Marking {
+            level: Level::TopSecret,
+            caveats: vec![Caveat::Waived],
+            compartments: vec![],
+        };
+        let hvsaco = Marking {
+            level: Level::TopSecret,
+            caveats: vec![Caveat::Hvsaco],
+            compartments: vec![],
+        };
+        assert_ne!(waived.canonical_bytes(), hvsaco.canonical_bytes());
     }
 
     #[test]
@@ -507,6 +871,23 @@ mod tests {
             }]
         );
         assert_eq!(m.to_string(), "TS//RD-FRD");
+    }
+
+    #[test]
+    fn parse_fgi() {
+        let m: Marking = "S//FGI".parse().unwrap();
+        assert_eq!(
+            m.compartments,
+            vec![Compartment {
+                kind: CompartmentKind::Fgi,
+                designator: String::new()
+            }]
+        );
+        assert_eq!(m.to_string(), "S//FGI");
+        let gbr: Marking = "S//FGI-GBR".parse().unwrap();
+        assert_eq!(gbr.compartments[0].designator, "GBR");
+        assert_eq!(gbr.to_string(), "S//FGI-GBR");
+        assert_eq!(gbr.display_banner(), "SECRET//FGI-GBR");
     }
 
     #[test]
@@ -538,14 +919,33 @@ mod tests {
         let err = "TS//SCI/ZZZZ".parse::<Marking>().unwrap_err();
         assert!(err.contains("ZZZZ"), "{err}");
         assert!("TS//SCI/TK,ZZZZ".parse::<Marking>().is_err());
+        assert!("TS//ZZZZ".parse::<Marking>().is_ok()); // Other caveat, not SCI
         let stored = Marking::from_stored("TS//SCI/ZZZZ").unwrap();
         assert_eq!(stored.level, Level::TopSecret);
         assert_eq!(stored.compartments[0].designator, "ZZZZ");
+        assert_eq!(stored.to_string(), "TS//ZZZZ");
+    }
+
+    #[test]
+    fn rejects_bare_sci_token() {
+        assert!("TS//SCI".parse::<Marking>().is_err());
+        let err = Marking {
+            level: Level::TopSecret,
+            caveats: vec![],
+            compartments: vec![Compartment {
+                kind: CompartmentKind::Sci,
+                designator: String::new(),
+            }],
+        }
+        .validate(SciRegister::bundled())
+        .unwrap_err();
+        assert!(err.contains("bare SCI"), "{err}");
     }
 
     #[test]
     fn rejects_unknown_sap_designator() {
         assert!("TS//SAP/ZZZZ".parse::<Marking>().is_err());
+        assert!("TS//SAR-ZZZZ".parse::<Marking>().is_err());
         let m: Marking = "TS//SAP/BYEMAN".parse().unwrap();
         assert_eq!(
             m.compartments,
@@ -554,6 +954,53 @@ mod tests {
                 designator: "BYEMAN".into()
             }]
         );
+        assert_eq!(m.to_string(), "TS//SAR-BYEMAN");
+    }
+
+    #[test]
+    fn parse_sar_hyphen_and_compartment() {
+        let m: Marking = "TS//TK//SAR-QSV-HOL//NOFORN".parse().unwrap();
+        assert_eq!(
+            m.compartments,
+            vec![
+                Compartment {
+                    kind: CompartmentKind::Sci,
+                    designator: "TK".into()
+                },
+                Compartment {
+                    kind: CompartmentKind::Sap,
+                    designator: "QSV-HOL".into()
+                }
+            ]
+        );
+        assert_eq!(m.to_string(), "TS//TK//SAR-QSV-HOL//NF");
+        assert_eq!(m.display_banner(), "TOP SECRET//TK//SAR-QSV-HOL//NOFORN");
+        assert!(m.validate(SciRegister::bundled()).is_ok());
+        let err = "TS//SAR-QSV/HOL".parse::<Marking>().unwrap_err();
+        assert!(err.contains("hyphen"), "{err}");
+        let legacy: Marking = "TS//SAP/QSV".parse().unwrap();
+        assert_eq!(legacy.to_string(), "TS//SAR-QSV");
+    }
+
+    #[test]
+    fn sar_not_grouped() {
+        let m: Marking = "TS//SAR-QSV//SAR-BYEMAN".parse().unwrap();
+        assert_eq!(m.compartments.len(), 2);
+        assert_eq!(m.to_string(), "TS//SAR-QSV//SAR-BYEMAN");
+    }
+
+    #[test]
+    fn validate_sar_rejects_slash() {
+        let m = Marking {
+            level: Level::TopSecret,
+            caveats: vec![],
+            compartments: vec![Compartment {
+                kind: CompartmentKind::Sap,
+                designator: "QSV/HOL".into(),
+            }],
+        };
+        let err = m.validate(SciRegister::bundled()).unwrap_err();
+        assert!(err.contains("hyphen"), "{err}");
     }
 
     #[test]
@@ -568,6 +1015,7 @@ mod tests {
         let sci = SciRegister::from_json(r#"{"sci":["FOO"],"sap":[]}"#).unwrap();
         let countries = CountryRegister::from_text("USA\n");
         assert!(Marking::parse_with("TS//SCI/FOO", &sci, &countries).is_ok());
+        assert!(Marking::parse_with("TS//FOO", &sci, &countries).is_ok());
         assert!(Marking::parse_with("TS//SCI/TK", &sci, &countries).is_err());
         assert!(Marking::parse_with("S//REL TO USA", &sci, &countries).is_ok());
         assert!(Marking::parse_with("S//REL TO GBR", &sci, &countries).is_err());
@@ -579,6 +1027,9 @@ mod tests {
         assert!(sci.allows(&CompartmentKind::Sci, "TK"));
         assert!(sci.allows(&CompartmentKind::Sci, "HCS"));
         assert!(!sci.allows(&CompartmentKind::Sci, "ZZZZ"));
+        assert!(sci.allows(&CompartmentKind::Sap, "QSV"));
+        assert!(sci.allows(&CompartmentKind::Sap, "QSV-HOL"));
+        assert!(!sci.allows(&CompartmentKind::Sap, "ZZZZ-HOL"));
         let c = CountryRegister::bundled();
         for code in ["USA", "GBR", "CAN", "AUS", "NZL", "FVEY"] {
             assert!(c.contains(code), "{code}");
@@ -588,21 +1039,61 @@ mod tests {
 
     #[test]
     fn canonical_stable_and_order_independent() {
-        let m: Marking = "TS//NOFORN//SCI/TK".parse().unwrap();
-        let m2: Marking = "TS//SCI/TK//NOFORN".parse().unwrap();
+        let m = Marking::from_stored("TS//NOFORN//SCI/TK").unwrap();
+        let m2: Marking = "TS//TK//NOFORN".parse().unwrap();
         assert_eq!(m.canonical_bytes(), m.canonical_bytes());
         assert_eq!(m.canonical_bytes(), m2.canonical_bytes());
+        let m3 = Marking::from_stored("TS//SCI/TK//NOFORN").unwrap();
+        assert_eq!(m.canonical_bytes(), m3.canonical_bytes());
+    }
+
+    #[test]
+    fn strict_parse_rejects_out_of_order() {
+        let err = "TS//NOFORN//SCI/TK".parse::<Marking>().unwrap_err();
+        assert!(err.contains("order"), "{err}");
+        for s in [
+            "TS//NOFORN//TK",
+            "TS//NF//SAR-QSV",
+            "TS//SAR-QSV//TK",
+            "TS//FGI//SAR-QSV",
+            "TS//NOFORN//CNWDI",
+            "TS//FGI//TK",
+            "TS//CNWDI//TK",
+        ] {
+            let err = s.parse::<Marking>().unwrap_err();
+            assert!(err.contains("order"), "{s}: {err}");
+        }
+        assert!("TS//TK//NOFORN".parse::<Marking>().is_ok());
+        assert!("TS//SCI/TK//NOFORN".parse::<Marking>().is_ok());
+        assert!("TS//TK//SAR-QSV//CNWDI//FGI//NOFORN"
+            .parse::<Marking>()
+            .is_ok());
+    }
+
+    #[test]
+    fn from_stored_lenient_legacy_grammar() {
+        let m = Marking::from_stored("TS//NOFORN//SCI/TK").unwrap();
+        assert_eq!(
+            m.compartments,
+            vec![Compartment {
+                kind: CompartmentKind::Sci,
+                designator: "TK".into()
+            }]
+        );
+        assert_eq!(m.caveats, vec![Caveat::Noforn]);
+        assert_eq!(m.display_portion(), "TS//TK//NF");
+        assert_eq!(m.display_banner(), "TOP SECRET//TK//NOFORN");
+        let sap = Marking::from_stored("TS//SAP/BYEMAN").unwrap();
+        assert_eq!(sap.to_string(), "TS//SAR-BYEMAN");
     }
 
     #[test]
     fn max_upgrades_by_aggregation() {
-        let ts = "TS//SCI/TK".parse::<Marking>().unwrap();
+        let ts = "TS//TK".parse::<Marking>().unwrap();
         let cui: Marking = "CUI".parse().unwrap();
         let s_noforn: Marking = "S//NOFORN".parse().unwrap();
-        // Higher level wins.
         assert_eq!(ts.max(&cui), ts);
         assert_eq!(cui.max(&ts), ts);
-        // Caveats union.
         let m = s_noforn.max(&ts);
         assert_eq!(m.level, Level::TopSecret);
         assert!(m.caveats.contains(&Caveat::Noforn));
@@ -610,16 +1101,14 @@ mod tests {
             kind: CompartmentKind::Sci,
             designator: "TK".into(),
         }));
-        assert_eq!(m.to_string(), "TS//NOFORN//SCI/TK");
-        // Aggregate folds.
+        assert_eq!(m.to_string(), "TS//TK//NF");
         let agg = Marking::aggregate([cui, s_noforn, ts]);
         assert_eq!(agg, m);
     }
 
     #[test]
-    fn comma_separated_compartments() {
-        // CAPCO: one SCI prefix, comma-separated designators.
-        let m: Marking = "TS//SCI/TK,HCS".parse().unwrap();
+    fn comma_separated_sci_no_prefix() {
+        let m: Marking = "TS//TK,HCS".parse().unwrap();
         assert_eq!(m.compartments.len(), 2);
         assert!(m.compartments.contains(&Compartment {
             kind: CompartmentKind::Sci,
@@ -629,10 +1118,29 @@ mod tests {
             kind: CompartmentKind::Sci,
             designator: "HCS".into()
         }));
-        assert_eq!(m.to_string(), "TS//SCI/TK,HCS");
-        // Aggregate of TK and HCS produces the comma form, not SCI/TK//SCI/HCS.
-        let tk: Marking = "TS//SCI/TK".parse().unwrap();
-        let hcs: Marking = "TS//SCI/HCS".parse().unwrap();
-        assert_eq!(tk.max(&hcs).to_string(), "TS//SCI/TK,HCS");
+        assert_eq!(m.to_string(), "TS//TK,HCS");
+        let legacy: Marking = "TS//SCI/TK,HCS".parse().unwrap();
+        assert_eq!(legacy.to_string(), "TS//TK,HCS");
+        let tk: Marking = "TS//TK".parse().unwrap();
+        let hcs: Marking = "TS//HCS".parse().unwrap();
+        assert_eq!(tk.max(&hcs).to_string(), "TS//TK,HCS");
+    }
+
+    #[test]
+    fn capco_order_on_display() {
+        let m: Marking = "TS//TK//SAR-QSV//CNWDI//FGI//NOFORN".parse().unwrap();
+        assert_eq!(m.to_string(), "TS//TK//SAR-QSV//CNWDI//FGI//NF");
+        assert_eq!(
+            m.display_banner(),
+            "TOP SECRET//TK//SAR-QSV//CNWDI//FGI//NOFORN"
+        );
+    }
+
+    #[test]
+    fn fgi_tag_does_not_collide() {
+        let m: Marking = "S//FGI".parse().unwrap();
+        let bytes = m.canonical_bytes();
+        assert_eq!(bytes[2], 1); // one compartment
+        assert_eq!(bytes[3], 5); // Fgi tag; Sci/Sap/RdFrd/Cnwdi stay 1–4
     }
 }

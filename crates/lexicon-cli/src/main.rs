@@ -2,8 +2,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lexicon_core::events::{Event, EventKind};
 use lexicon_core::ledger::Ledger;
 use lexicon_core::linter::{LintSeverity, NameCandidate};
+use lexicon_core::marking::{Level, Marking};
 use lexicon_core::mint::{verify_mint, MintRequest, Minter};
 use lexicon_core::pool::PoolWord;
+use lexicon_core::program::{
+    derive_marking, render_marking, roll_up_marking, Compartment, Control, ControlKind, Program,
+    Profile, SapType,
+};
 use lexicon_core::types::{normalize, NameType};
 use lexicon_core::{Authority, Error, Signer};
 use lexicon_pools::bundled;
@@ -64,6 +69,17 @@ enum Cmd {
         digraph: Option<String>,
         #[arg(long, default_value_t = 64)]
         max_attempts: u32,
+        /// Bind to a SAP program. Codeword/cryptonym markings derive from it.
+        #[arg(long)]
+        program: Option<String>,
+        /// Bind to a compartment of `--program`.
+        #[arg(long)]
+        compartment: Option<String>,
+    },
+    /// SAP program object model (create, compartments, controls)
+    Program {
+        #[command(subcommand)]
+        cmd: ProgramCmd,
     },
     /// Verify a minted-name JSON file (VRF + pool indices)
     Verify {
@@ -129,6 +145,121 @@ enum KeyCmd {
         co_author: Option<String>,
         #[arg(long, default_value = "scheduled")]
         reason: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProgramCmd {
+    /// Create a SAP program (signed ProgramCreated event)
+    Create {
+        #[arg(long)]
+        pid: String,
+        #[arg(long)]
+        nickname: String,
+        #[arg(long)]
+        codeword: Option<String>,
+        #[arg(long)]
+        sap_type: String,
+        #[arg(long)]
+        level: String,
+        #[arg(long)]
+        agency: String,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        sci: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        dissem: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        aea: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        fgi: Vec<String>,
+    },
+    /// List programs on the ledger
+    List,
+    /// Show one program, its controls, and compartments
+    Show {
+        #[arg(long)]
+        pid: String,
+    },
+    /// List every name belonging to a program: PID, nickname, codeword,
+    /// compartment nicknames/codewords, and minted names bound to it.
+    Names {
+        #[arg(long)]
+        pid: String,
+    },
+    /// Add a compartment under a program
+    Compartment {
+        #[command(subcommand)]
+        cmd: CompartmentCmd,
+    },
+    /// Add or remove SCI/dissem/AEA/FGI controls
+    Controls {
+        #[command(subcommand)]
+        cmd: ControlsCmd,
+    },
+    /// Render an explicit roll-up banner for a set of slices.
+    /// Standing (no slices) is the default; pass --slices to compile.
+    Banner {
+        #[arg(long)]
+        pid: String,
+        #[arg(long, value_delimiter = ',', help = "compartment IDs to include")]
+        slices: Vec<String>,
+        #[arg(long, value_enum, default_value = "capco", help = "dod | capco")]
+        profile: ProfileArg,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompartmentCmd {
+    /// Add a compartment under a program
+    Add {
+        #[arg(long)]
+        program: String,
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        nickname: String,
+        #[arg(long)]
+        codeword: Option<String>,
+        #[arg(long)]
+        parent: Option<String>,
+        #[arg(long, help = "slice level if lower than the program (e.g. S for TEV)")]
+        level: Option<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        sci: Vec<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ControlsCmd {
+    /// Add SCI/dissem/AEA/FGI controls (ProgramControlsChanged)
+    Add {
+        #[arg(long)]
+        program: String,
+        #[arg(long)]
+        compartment: Option<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        sci: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        dissem: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        aea: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        fgi: Vec<String>,
+    },
+    /// Remove SCI/dissem/AEA/FGI controls (ProgramControlsChanged)
+    Remove {
+        #[arg(long)]
+        program: String,
+        #[arg(long)]
+        compartment: Option<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        sci: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        dissem: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        aea: Vec<String>,
+        #[arg(long, value_delimiter = ',', action = clap::ArgAction::Append)]
+        fgi: Vec<String>,
     },
 }
 
@@ -266,6 +397,23 @@ impl From<TypeArg> for NameType {
     }
 }
 
+#[derive(Clone, Copy, ValueEnum)]
+enum ProfileArg {
+    #[value(alias = "DOD")]
+    Dod,
+    #[value(alias = "CAPCO")]
+    Capco,
+}
+
+impl From<ProfileArg> for Profile {
+    fn from(v: ProfileArg) -> Self {
+        match v {
+            ProfileArg::Dod => Profile::DoDBanner,
+            ProfileArg::Capco => Profile::CapcoBanner,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -390,6 +538,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             agency,
             digraph,
             max_attempts,
+            program,
+            compartment,
         } => {
             let agency = agency.to_ascii_uppercase();
             let auth = load_auth(&cli.data_dir, &agency)?;
@@ -399,9 +549,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut minter = Minter::new(&auth, pools, &linter, &mut ledger);
             let marking = match &cli.classification {
                 Some(c) => c
-                    .parse::<lexicon_core::marking::Marking>()
+                    .parse::<Marking>()
                     .map_err(|e| format!("bad classification: {e}"))?,
-                None => lexicon_core::marking::Marking::default(),
+                None => Marking::default(),
             };
             for w in marking.warnings() {
                 eprintln!("warning: {w}");
@@ -414,13 +564,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 digraph,
                 marking,
                 attribution,
+                program_pid: program.clone(),
+                compartment_id: compartment.clone(),
             })?;
             if ui.is_json() {
                 let mut v = serde_json::to_value(&minted)?;
+                let obj = v.as_object_mut().unwrap();
                 if let Some(c) = &cli.classification {
-                    v.as_object_mut()
-                        .unwrap()
-                        .insert("classification".into(), c.clone().into());
+                    obj.insert("classification".into(), c.clone().into());
+                }
+                if let Some(p) = &program {
+                    obj.insert("program".into(), p.to_ascii_uppercase().into());
+                }
+                if let Some(c) = &compartment {
+                    obj.insert("compartment".into(), c.to_ascii_uppercase().into());
                 }
                 ui.json(&v);
             } else {
@@ -429,6 +586,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ui.kv("agency", &minted.authority_id);
                 ui.kv("sequence", &minted.sequence.to_string());
                 ui.kv("nonce", &minted.nonce.to_string());
+                ui.kv("marking", &ui::portion(&minted.marking));
+                if let Some(p) = &program {
+                    ui.kv("program", &p.to_ascii_uppercase());
+                }
+                if let Some(c) = &compartment {
+                    ui.kv("compartment", &c.to_ascii_uppercase());
+                }
             }
         }
         Cmd::Verify { file, ledger } => {
@@ -530,12 +694,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .filter(|r| r.status == "issued")
                     .collect();
                 if let Some(m) = &marking {
-                    let want: lexicon_core::marking::Marking =
-                        m.parse().map_err(|e| format!("bad --marking: {e}"))?;
-                    recs.retain(|r| {
-                        lexicon_core::marking::Marking::from_stored(&r.marking)
-                            .is_ok_and(|rm| rm == want)
-                    });
+                    let want: Marking = m.parse().map_err(|e| format!("bad --marking: {e}"))?;
+                    recs.retain(|r| Marking::from_stored(&r.marking).is_ok_and(|rm| rm == want));
                 }
                 if ui.is_json() {
                     ui.json(&recs);
@@ -544,7 +704,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ui.banner_top(&pm);
                     ui.heading(&format!("{} issued names", recs.len()));
                     for r in &recs {
-                        ui.line(&format!("  {:<14} {}", r.display, r.marking));
+                        ui.line(&format!(
+                            "  {:<14} {}",
+                            r.display,
+                            ui::portion_of_stored(&r.marking)
+                        ));
                     }
                     ui.banner_bottom(&pm);
                 }
@@ -565,7 +729,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             ui.kv("status", &r.status);
                             ui.kv("type", &r.name_type);
                             ui.kv("agency", &r.authority_id);
-                            ui.kv("marking", &r.marking);
+                            ui.kv("marking", &ui::portion_of_stored(&r.marking));
+                            if let Some(pid) = &r.program_pid {
+                                ui.kv("program", pid);
+                            }
+                            if let Some(cid) = &r.compartment_id {
+                                ui.kv("compartment", cid);
+                            }
                             ui.kv("user", &r.attribution);
                             ui.kv("seq", &r.event_seq.to_string());
                             ui.kv("at", &r.created_at);
@@ -604,12 +774,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if let Some(m) = &marking {
                     // Spillage guard: filter to one marking so a CUI-only
                     // workstation never materializes a TS name into its logs.
-                    let want: lexicon_core::marking::Marking =
-                        m.parse().map_err(|e| format!("bad --marking: {e}"))?;
-                    recs.retain(|r| {
-                        lexicon_core::marking::Marking::from_stored(&r.marking)
-                            .is_ok_and(|rm| rm == want)
-                    });
+                    let want: Marking = m.parse().map_err(|e| format!("bad --marking: {e}"))?;
+                    recs.retain(|r| Marking::from_stored(&r.marking).is_ok_and(|rm| rm == want));
                 }
                 if ui.is_json() {
                     ui.json(&recs);
@@ -623,7 +789,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             r.status,
                             r.display,
                             r.authority_id,
-                            r.marking,
+                            ui::portion_of_stored(&r.marking),
                             r.created_at,
                             r.attribution
                         ));
@@ -636,16 +802,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let rows = led.event_rows()?;
                 // Container marking = max of exported event markings,
                 // floored by --classification.
-                let mut agg = lexicon_core::marking::Marking::default();
+                let mut agg = Marking::default();
                 for r in &rows {
                     if let Some(m) = r.marking.as_deref() {
-                        if let Ok(parsed) = m.parse::<lexicon_core::marking::Marking>() {
+                        if let Ok(parsed) = Marking::from_stored(m) {
                             agg = agg.max(&parsed);
                         }
                     }
                 }
                 if let Some(c) = &cli.classification {
-                    if let Ok(fm) = c.parse::<lexicon_core::marking::Marking>() {
+                    if let Ok(fm) = c.parse::<Marking>() {
                         agg = agg.max(&fm);
                     }
                 }
@@ -871,6 +1037,452 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
+        Cmd::Program { cmd } => match cmd {
+            ProgramCmd::Create {
+                pid,
+                nickname,
+                codeword,
+                sap_type,
+                level,
+                agency,
+                sci,
+                dissem,
+                aea,
+                fgi,
+            } => {
+                let agency = agency.to_ascii_uppercase();
+                let pid = pid.to_ascii_uppercase();
+                let sap_type = SapType::parse(&sap_type)?;
+                let level = Level::parse(&level).ok_or_else(|| format!("bad --level: {level}"))?;
+                let controls = collect_controls(sci, dissem, aea, fgi);
+                {
+                    let led = open_ledger(&cli.data_dir)?;
+                    for (label, val) in [
+                        ("nickname", nickname.as_str()),
+                        ("codeword", codeword.as_deref().unwrap_or("")),
+                    ] {
+                        if !val.is_empty() && led.is_display_name_taken(val)? {
+                            return Err(format!(
+                                "{label} '{val}' collides with an existing name in the global namespace"
+                            )
+                            .into());
+                        }
+                    }
+                }
+                let program = Program {
+                    pid: pid.clone(),
+                    nickname,
+                    codeword,
+                    sap_type,
+                    level,
+                    authority_id: agency.clone(),
+                    controls,
+                };
+                let marking = derive_marking(&program, None);
+                let seq = append_program_event(
+                    &cli.data_dir,
+                    &agency,
+                    EventKind::ProgramCreated(program.clone()),
+                    allow_env_identity,
+                )?;
+                if ui.is_json() {
+                    ui.json(&serde_json::json!({
+                        "pid": program.pid,
+                        "nickname": program.nickname,
+                        "codeword": program.codeword,
+                        "sap_type": program.sap_type.as_str(),
+                        "level": program.level.as_str(),
+                        "agency": program.authority_id,
+                        "controls": program.controls,
+                        "marking": marking.to_string(),
+                        "seq": seq,
+                    }));
+                } else {
+                    ui.status(true, &format!("created program {pid} (seq {seq})"));
+                    ui.kv("nickname", &program.nickname);
+                    ui.kv("sap type", program.sap_type.as_str());
+                    ui.kv("level", program.level.as_str());
+                    ui.kv("agency", &program.authority_id);
+                    ui.kv("marking", &ui::portion(&marking));
+                }
+            }
+            ProgramCmd::List => {
+                let led = open_ledger(&cli.data_dir)?;
+                let programs = led.programs()?;
+                if ui.is_json() {
+                    ui.json(&programs);
+                } else {
+                    let mut agg = Marking::default();
+                    for p in &programs {
+                        agg = agg.max(&derive_marking(p, None));
+                    }
+                    ui.banner_top(&agg);
+                    ui.heading(&format!("{} programs", programs.len()));
+                    for p in &programs {
+                        ui.line(&format!(
+                            "  {:<6} {:<24} {:<14} {:<4} {}",
+                            p.pid,
+                            p.nickname,
+                            p.sap_type.as_str(),
+                            p.level.as_str(),
+                            p.authority_id
+                        ));
+                    }
+                    ui.banner_bottom(&agg);
+                }
+            }
+            ProgramCmd::Show { pid } => {
+                let led = open_ledger(&cli.data_dir)?;
+                match led.program(&pid)? {
+                    Some(p) => {
+                        let comps = led.compartments(&p.pid)?;
+                        let standing = derive_marking(&p, None);
+                        if ui.is_json() {
+                            ui.json(&serde_json::json!({
+                                "program": p,
+                                "compartments": comps,
+                                "marking": standing.to_string(),
+                            }));
+                        } else {
+                            // Standing banner = program record, no slices.
+                            // Roll-up of all slices is a separate command
+                            // (`program banner --slices ...`); the show
+                            // screen does not fake a compilation line.
+                            ui.banner_top(&standing);
+                            ui.heading(&format!("program {}", p.pid));
+                            ui.kv("nickname", &p.nickname);
+                            if let Some(cw) = &p.codeword {
+                                ui.kv("codeword", cw);
+                            }
+                            ui.kv("sap type", p.sap_type.as_str());
+                            ui.kv("level", p.level.as_str());
+                            ui.kv("agency", &p.authority_id);
+                            for kind in [
+                                ControlKind::Sci,
+                                ControlKind::Dissem,
+                                ControlKind::Aea,
+                                ControlKind::Fgi,
+                            ] {
+                                let vals = control_values(&p.controls, kind);
+                                if !vals.is_empty() {
+                                    ui.kv(kind.as_str(), &vals.join(", "));
+                                }
+                            }
+                            ui.kv("marking", &ui::portion(&standing));
+                            ui.kv(
+                                "DoD banner",
+                                &render_marking(&p, None, Profile::DoDBanner),
+                            );
+                            if comps.is_empty() {
+                                ui.line("  (no compartments)");
+                            } else {
+                                ui.heading("compartments");
+                                for c in &comps {
+                                    let cm = derive_marking(&p, Some(c));
+                                    let sci = control_values(&c.controls, ControlKind::Sci);
+                                    let mut line = format!(
+                                        "  {:<6} {:<16} ",
+                                        c.id, c.nickname,
+                                    );
+                                    if let Some(cw) = &c.codeword {
+                                        line.push_str(&format!("cw={cw} "));
+                                    }
+                                    if !sci.is_empty() {
+                                        line.push_str(&format!("sci={} ", sci.join(",")));
+                                    }
+                                    line.push_str(&ui::portion(&cm));
+                                    ui.line(&line);
+                                }
+                            }
+                            // Exercises bound to this program (mint --type
+                            // exercise --program QSV). Names stay U.
+                            let exercises: Vec<_> = led
+                                .name_records()?
+                                .into_iter()
+                                .filter(|r| {
+                                    r.program_pid.as_deref() == Some(p.pid.as_str())
+                                        && r.name_type == "exercise"
+                                        && r.status == "issued"
+                                })
+                                .collect();
+                            if exercises.is_empty() {
+                                ui.line("  (no exercises)");
+                            } else {
+                                ui.heading("exercises");
+                                for r in &exercises {
+                                    ui.line(&format!("  {:<24} {}", r.display, ui::portion_of_stored(&r.marking)));
+                                }
+                            }
+                            ui.banner_bottom(&standing);
+                        }
+                    }
+                    None => {
+                        if ui.is_json() {
+                            ui.json(&serde_json::json!({
+                                "pid": pid.to_ascii_uppercase(),
+                                "found": false,
+                            }));
+                        } else {
+                            ui.status(false, "unknown program");
+                        }
+                    }
+                }
+            }
+            ProgramCmd::Names { pid } => {
+                let led = open_ledger(&cli.data_dir)?;
+                let p = require_program(&led, &pid)?;
+                let comps = led.compartments(&p.pid)?;
+                // Steward-assigned names: PID, program nickname, program codeword,
+                // each compartment's nickname and codeword. These are not in the
+                // `names` table (not VRF-minted), so `ledger names` cannot show
+                // them; this command is the program-scoped lexicon view.
+                let mut rows: Vec<(String, String, String)> = Vec::new();
+                rows.push((p.pid.clone(), "pid".into(), "U".into()));
+                rows.push((p.nickname.clone(), "nickname".into(), "U".into()));
+                if let Some(cw) = &p.codeword {
+                    rows.push((
+                        cw.clone(),
+                        "codeword".into(),
+                        render_marking(&p, None, Profile::Portion),
+                    ));
+                }
+                for c in &comps {
+                    rows.push((c.nickname.clone(), "compartment nickname".into(), "U".into()));
+                    if let Some(cw) = &c.codeword {
+                        rows.push((
+                            cw.clone(),
+                            "compartment codeword".into(),
+                            render_marking(&p, Some(c), Profile::Portion),
+                        ));
+                    }
+                }
+                // Minted names bound to this program (VRF-derived, in the ledger).
+                for r in led.name_records()? {
+                    if r.program_pid.as_deref() == Some(p.pid.as_str()) && r.status == "issued" {
+                        rows.push((r.display.clone(), r.name_type.clone(), r.marking.clone()));
+                    }
+                }
+                if ui.is_json() {
+                    ui.json(&rows);
+                } else {
+                    let agg = led.aggregate_marking()?;
+                    ui.banner_top(&agg);
+                    ui.heading(&format!("names for program {}", p.pid));
+                    for (name, kind, marking) in &rows {
+                        ui.line(&format!("  {:<24} {:<20} {}", name, kind, marking));
+                    }
+                    ui.banner_bottom(&agg);
+                }
+            }
+            ProgramCmd::Compartment { cmd } => match cmd {
+                CompartmentCmd::Add {
+                    program,
+                    id,
+                    nickname,
+                    codeword,
+                    parent,
+                    level,
+                    sci,
+                } => {
+                    let mut led = open_ledger(&cli.data_dir)?;
+                    let p = require_program(&led, &program)?;
+                    let agency = p.authority_id.clone();
+                    let slice_level = level
+                        .as_deref()
+                        .and_then(lexicon_core::marking::Level::parse)
+                        .ok_or_else(|| format!("bad --level: {:?}", level))?;
+                    let controls = sci
+                        .into_iter()
+                        .map(|v| Control::new(ControlKind::Sci, v))
+                        .collect();
+                    // Deconfliction: compartment nickname/codeword share the global
+                    // display-name namespace with issued names. Reject collisions.
+                    for label in ["nickname", "codeword"] {
+                        let val = if label == "nickname" {
+                            nickname.as_str()
+                        } else {
+                            codeword.as_deref().unwrap_or("")
+                        };
+                        if !val.is_empty() && led.is_display_name_taken(val)? {
+                            return Err(format!(
+                                "{label} '{val}' collides with an existing name in the global namespace"
+                            )
+                            .into());
+                        }
+                    }
+                    let c = Compartment {
+                        program_pid: p.pid.clone(),
+                        id: id.to_ascii_uppercase(),
+                        nickname,
+                        codeword,
+                        parent_id: parent,
+                        controls,
+                        level: Some(slice_level),
+                    };
+                    let marking = derive_marking(&p, Some(&c));
+                    let mut event = Event::new(EventKind::CompartmentAdded(c.clone()));
+                    event.attribution = session_attribution(allow_env_identity)?;
+                    let auth = load_auth(&cli.data_dir, &agency)?;
+                    let seq = led.append(event, &auth)?;
+                    if ui.is_json() {
+                        ui.json(&serde_json::json!({
+                            "program": c.program_pid,
+                            "id": c.id,
+                            "nickname": c.nickname,
+                            "codeword": c.codeword,
+                            "parent": c.parent_id,
+                            "controls": c.controls,
+                            "marking": marking.to_string(),
+                            "seq": seq,
+                        }));
+                    } else {
+                        ui.status(
+                            true,
+                            &format!(
+                                "added compartment {} on {} (seq {seq})",
+                                c.id, c.program_pid
+                            ),
+                        );
+                        ui.kv("nickname", &c.nickname);
+                        ui.kv("marking", &ui::portion(&marking));
+                    }
+                }
+            },
+            ProgramCmd::Controls { cmd } => {
+                let (add, program, compartment, sci, dissem, aea, fgi) = match cmd {
+                    ControlsCmd::Add {
+                        program,
+                        compartment,
+                        sci,
+                        dissem,
+                        aea,
+                        fgi,
+                    } => (true, program, compartment, sci, dissem, aea, fgi),
+                    ControlsCmd::Remove {
+                        program,
+                        compartment,
+                        sci,
+                        dissem,
+                        aea,
+                        fgi,
+                    } => (false, program, compartment, sci, dissem, aea, fgi),
+                };
+                let delta = collect_controls(sci, dissem, aea, fgi);
+                if delta.is_empty() {
+                    return Err("need at least one of --sci/--dissem/--aea/--fgi".into());
+                }
+                let mut led = open_ledger(&cli.data_dir)?;
+                let p = require_program(&led, &program)?;
+                if let Some(cid) = &compartment {
+                    if led.compartment(&p.pid, cid)?.is_none() {
+                        return Err(format!(
+                            "unknown compartment {} on program {}",
+                            cid.to_ascii_uppercase(),
+                            p.pid
+                        )
+                        .into());
+                    }
+                }
+                let agency = p.authority_id.clone();
+                let (add_v, remove_v) = if add {
+                    (delta.clone(), Vec::new())
+                } else {
+                    (Vec::new(), delta.clone())
+                };
+                let mut event = Event::new(EventKind::ProgramControlsChanged {
+                    program_pid: p.pid.clone(),
+                    compartment_id: compartment.clone(),
+                    add: add_v,
+                    remove: remove_v,
+                });
+                event.attribution = session_attribution(allow_env_identity)?;
+                let auth = load_auth(&cli.data_dir, &agency)?;
+                let seq = led.append(event, &auth)?;
+                if ui.is_json() {
+                    ui.json(&serde_json::json!({
+                        "program": p.pid,
+                        "compartment": compartment.as_deref().map(|s| s.to_ascii_uppercase()),
+                        "add": add,
+                        "controls": delta,
+                        "seq": seq,
+                    }));
+                } else {
+                    let verb = if add { "added" } else { "removed" };
+                    let target = match &compartment {
+                        Some(cid) => format!("{} / {}", p.pid, cid.to_ascii_uppercase()),
+                        None => p.pid,
+                    };
+                    ui.status(true, &format!("{verb} controls on {target} (seq {seq})"));
+                }
+            }
+            ProgramCmd::Banner {
+                pid,
+                slices,
+                profile,
+            } => {
+                let led = open_ledger(&cli.data_dir)?;
+                let p = require_program(&led, &pid)?;
+                let all = led.compartments(&p.pid)?;
+                let mut selected: Vec<&Compartment> = Vec::new();
+                for sid in &slices {
+                    let sid = sid.to_ascii_uppercase();
+                    match all.iter().find(|c| c.id == sid) {
+                        Some(c) => selected.push(c),
+                        None => {
+                            return Err(format!(
+                                "unknown slice {sid} on program {}",
+                                p.pid
+                            )
+                            .into());
+                        }
+                    }
+                }
+                let prof: Profile = profile.into();
+                // Build the roll-up marking once; banner_top renders it via
+                // display_banner, so the composite SAR token (spaces between
+                // sibling compartments) is emitted correctly.
+                let mut m = roll_up_marking(&p, &selected);
+                if matches!(prof, Profile::DoDBanner) {
+                    for c in &mut m.compartments {
+                        if c.kind == lexicon_core::marking::CompartmentKind::Sap {
+                            // SAR-<prog nickname>-<comp ids>; comp IDs stay
+                            // (compartment nicknames contain spaces).
+                            let head = p.nickname.clone();
+                            c.designator = if selected.is_empty() {
+                                head
+                            } else {
+                                let mut ids: Vec<String> =
+                                    selected.iter().map(|x| x.id.to_ascii_uppercase()).collect();
+                                ids.sort();
+                                ids.dedup();
+                                format!("{head}-{}", ids.join(" "))
+                            };
+                        }
+                    }
+                }
+                let banner = m.display_banner();
+                let portion = m.display_portion();
+                if ui.is_json() {
+                    ui.json(&serde_json::json!({
+                        "program": p.pid,
+                        "slices": selected.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
+                        "profile": format!("{prof:?}").to_lowercase(),
+                        "banner": banner,
+                        "portion": portion,
+                    }));
+                } else {
+                    ui.banner_top(&m);
+                    ui.kv("program", &p.pid);
+                    ui.kv(
+                        "slices",
+                        &selected.iter().map(|c| c.id.clone()).collect::<Vec<_>>().join(","),
+                    );
+                    ui.kv("banner", &banner);
+                    ui.kv("portion", &portion);
+                    ui.banner_bottom(&m);
+                }
+            }
+        },
         Cmd::Retire {
             name,
             agency,
@@ -963,21 +1575,65 @@ fn sample(words: &[String]) -> String {
     s
 }
 
+fn collect_controls(
+    sci: Vec<String>,
+    dissem: Vec<String>,
+    aea: Vec<String>,
+    fgi: Vec<String>,
+) -> Vec<Control> {
+    let mut out = Vec::new();
+    out.extend(sci.into_iter().map(|v| Control::new(ControlKind::Sci, v)));
+    out.extend(
+        dissem
+            .into_iter()
+            .map(|v| Control::new(ControlKind::Dissem, v)),
+    );
+    out.extend(aea.into_iter().map(|v| Control::new(ControlKind::Aea, v)));
+    out.extend(fgi.into_iter().map(|v| Control::new(ControlKind::Fgi, v)));
+    out
+}
+
+fn control_values(controls: &[Control], kind: ControlKind) -> Vec<&str> {
+    controls
+        .iter()
+        .filter(|c| c.kind == kind)
+        .map(|c| c.value.as_str())
+        .collect()
+}
+
+fn require_program(led: &Ledger, pid: &str) -> Result<Program, Box<dyn std::error::Error>> {
+    led.program(pid)?
+        .ok_or_else(|| format!("unknown program: {}", pid.to_ascii_uppercase()).into())
+}
+
+fn append_program_event(
+    data: &Path,
+    agency: &str,
+    kind: EventKind,
+    allow_env_identity: bool,
+) -> Result<u64, Box<dyn std::error::Error>> {
+    let mut event = Event::new(kind);
+    event.attribution = session_attribution(allow_env_identity)?;
+    let auth = load_auth(data, agency)?;
+    let mut led = open_ledger(data)?;
+    Ok(led.append(event, &auth)?)
+}
+
 /// Page marking = max(displayed content), floored by `--classification`.
 /// The banner is the aggregate of what's on the page, not the flag.
-fn page_marking(recs: &[lexicon_core::NameRecord], floor: Option<&str>) -> String {
-    let mut agg = lexicon_core::marking::Marking::default();
+fn page_marking(recs: &[lexicon_core::NameRecord], floor: Option<&str>) -> Marking {
+    let mut agg = Marking::default();
     for r in recs {
-        if let Ok(m) = lexicon_core::marking::Marking::from_stored(&r.marking) {
+        if let Ok(m) = Marking::from_stored(&r.marking) {
             agg = agg.max(&m);
         }
     }
     if let Some(f) = floor {
-        if let Ok(fm) = f.parse::<lexicon_core::marking::Marking>() {
+        if let Ok(fm) = f.parse::<Marking>() {
             agg = agg.max(&fm);
         }
     }
-    agg.to_string()
+    agg
 }
 
 #[cfg(test)]
@@ -1023,5 +1679,172 @@ mod tests {
     fn approved_mode_parses() {
         let cli = Cli::try_parse_from(["lexicon", "--approved-mode", "ledger", "verify"]).unwrap();
         assert!(cli.approved_mode);
+    }
+
+    #[test]
+    fn mint_program_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "lexicon",
+            "mint",
+            "--type",
+            "codeword",
+            "--agency",
+            "DIA",
+            "--program",
+            "QSV",
+            "--compartment",
+            "HOL",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Mint {
+                program,
+                compartment,
+                ..
+            } => {
+                assert_eq!(program.as_deref(), Some("QSV"));
+                assert_eq!(compartment.as_deref(), Some("HOL"));
+            }
+            _ => panic!("expected mint"),
+        }
+    }
+
+    #[test]
+    fn mint_without_program_still_parses() {
+        let cli = Cli::try_parse_from(["lexicon", "mint", "--type", "nickname", "--agency", "DIA"])
+            .unwrap();
+        match cli.cmd {
+            Cmd::Mint {
+                program,
+                compartment,
+                ..
+            } => {
+                assert!(program.is_none());
+                assert!(compartment.is_none());
+            }
+            _ => panic!("expected mint"),
+        }
+    }
+
+    #[test]
+    fn program_create_parses_repeatable_controls() {
+        let cli = Cli::try_parse_from([
+            "lexicon",
+            "program",
+            "create",
+            "--pid",
+            "QSV",
+            "--nickname",
+            "DILIGENTLY IMPRESSED",
+            "--sap-type",
+            "unack",
+            "--level",
+            "TS",
+            "--agency",
+            "DIA",
+            "--sci",
+            "TK",
+            "--sci",
+            "HCS",
+            "--dissem",
+            "NOFORN",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Program {
+                cmd:
+                    ProgramCmd::Create {
+                        pid,
+                        sap_type,
+                        level,
+                        sci,
+                        dissem,
+                        ..
+                    },
+            } => {
+                assert_eq!(pid, "QSV");
+                assert_eq!(sap_type, "unack");
+                assert_eq!(level, "TS");
+                assert_eq!(sci, vec!["TK", "HCS"]);
+                assert_eq!(dissem, vec!["NOFORN"]);
+            }
+            _ => panic!("expected program create"),
+        }
+    }
+
+    #[test]
+    fn program_compartment_and_controls_parse() {
+        let add = Cli::try_parse_from([
+            "lexicon",
+            "program",
+            "compartment",
+            "add",
+            "--program",
+            "QSV",
+            "--id",
+            "HOL",
+            "--nickname",
+            "HOLLERED",
+            "--sci",
+            "TK",
+        ])
+        .unwrap();
+        match add.cmd {
+            Cmd::Program {
+                cmd:
+                    ProgramCmd::Compartment {
+                        cmd: CompartmentCmd::Add { id, sci, .. },
+                    },
+            } => {
+                assert_eq!(id, "HOL");
+                assert_eq!(sci, vec!["TK"]);
+            }
+            _ => panic!("expected compartment add"),
+        }
+
+        let ctl = Cli::try_parse_from([
+            "lexicon",
+            "program",
+            "controls",
+            "add",
+            "--program",
+            "QSV",
+            "--compartment",
+            "HOL",
+            "--sci",
+            "SI",
+        ])
+        .unwrap();
+        match ctl.cmd {
+            Cmd::Program {
+                cmd:
+                    ProgramCmd::Controls {
+                        cmd: ControlsCmd::Add { sci, .. },
+                    },
+            } => assert_eq!(sci, vec!["SI"]),
+            _ => panic!("expected controls add"),
+        }
+    }
+
+    #[test]
+    fn page_marking_is_typed_for_banner_profile() {
+        let recs = [lexicon_core::NameRecord {
+            display: "OXIDE".into(),
+            normalized: "OXIDE".into(),
+            status: "issued".into(),
+            name_type: "CODE-WORD".into(),
+            authority_id: "DIA".into(),
+            event_seq: 1,
+            created_at: String::new(),
+            marking: "TS//TK//NOFORN".into(),
+            attribution: String::new(),
+            program_pid: None,
+            compartment_id: None,
+        }];
+        let m = page_marking(&recs, None);
+        assert_eq!(m.display_banner(), "TOP SECRET//TK//NOFORN");
+        assert_eq!(m.display_portion(), "TS//TK//NF");
+        let floored = page_marking(&recs, Some("TS//TK//SAR-QSV//NOFORN"));
+        assert_eq!(floored.display_banner(), "TOP SECRET//TK//SAR-QSV//NOFORN");
     }
 }

@@ -1,4 +1,5 @@
 use crate::error::{Error, Result};
+use crate::program::{Compartment, Control, Program, ProgramEvent};
 use crate::types::{normalize, NameType};
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +81,11 @@ pub enum EventKind {
         indices: Vec<u32>,
         #[serde(default)]
         marking: crate::marking::Marking,
+        /// Names-index only. Not in `canonical_bytes` — Issued hashes stay stable.
+        #[serde(default)]
+        program_pid: Option<String>,
+        #[serde(default)]
+        compartment_id: Option<String>,
     },
     Retired {
         name: String,
@@ -106,6 +112,17 @@ pub enum EventKind {
         reason: AttemptReason,
         detail: String,
     },
+    ProgramCreated(Program),
+    CompartmentAdded(Compartment),
+    ProgramControlsChanged {
+        program_pid: String,
+        #[serde(default)]
+        compartment_id: Option<String>,
+        #[serde(default)]
+        add: Vec<Control>,
+        #[serde(default)]
+        remove: Vec<Control>,
+    },
 }
 
 impl EventKind {
@@ -116,6 +133,9 @@ impl EventKind {
             Self::Revoked { .. } => 3,
             Self::KeyRotated { .. } => 4,
             Self::Attempt { .. } => 5,
+            Self::ProgramCreated(_) => 6,
+            Self::CompartmentAdded(_) => 7,
+            Self::ProgramControlsChanged { .. } => 8,
         }
     }
 
@@ -126,6 +146,48 @@ impl EventKind {
             Self::Revoked { .. } => "revoked",
             Self::KeyRotated { .. } => "key_rotated",
             Self::Attempt { .. } => "attempt",
+            Self::ProgramCreated(_) => "program_created",
+            Self::CompartmentAdded(_) => "compartment_added",
+            Self::ProgramControlsChanged { .. } => "program_controls_changed",
+        }
+    }
+
+    pub fn to_program_event(&self) -> Option<ProgramEvent> {
+        match self {
+            Self::ProgramCreated(p) => Some(ProgramEvent::Created(p.clone())),
+            Self::CompartmentAdded(c) => Some(ProgramEvent::CompartmentAdded(c.clone())),
+            Self::ProgramControlsChanged {
+                program_pid,
+                compartment_id,
+                add,
+                remove,
+            } => Some(ProgramEvent::ControlsChanged {
+                program_pid: program_pid.clone(),
+                compartment_id: compartment_id.clone(),
+                add: add.clone(),
+                remove: remove.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl From<ProgramEvent> for EventKind {
+    fn from(e: ProgramEvent) -> Self {
+        match e {
+            ProgramEvent::Created(p) => Self::ProgramCreated(p),
+            ProgramEvent::CompartmentAdded(c) => Self::CompartmentAdded(c),
+            ProgramEvent::ControlsChanged {
+                program_pid,
+                compartment_id,
+                add,
+                remove,
+            } => Self::ProgramControlsChanged {
+                program_pid,
+                compartment_id,
+                add,
+                remove,
+            },
         }
     }
 }
@@ -139,7 +201,7 @@ pub struct Event {
 }
 
 impl Event {
-    /// v2 binds attribution. v3 is the PQ valve (RFC §10).
+    /// v2 binds attribution. v3 is the PQ valve (RFC §12).
     pub const PREFIX: &'static [u8] = b"MERIDIAN-EVENT-v2\0";
 
     pub fn version() -> u8 {
@@ -174,6 +236,8 @@ impl Event {
                 vrf_output,
                 indices,
                 marking,
+                program_pid: _,
+                compartment_id: _,
             } => {
                 put_str(&mut buf, &normalize(name));
                 buf.push(name_type.tag());
@@ -230,6 +294,35 @@ impl Event {
                 buf.push(reason.tag());
                 put_str(&mut buf, detail);
             }
+            EventKind::ProgramCreated(p) => {
+                put_str(&mut buf, &normalize(&p.pid));
+                put_str(&mut buf, &normalize(&p.nickname));
+                put_opt_norm(&mut buf, p.codeword.as_deref());
+                buf.push(p.sap_type.tag());
+                buf.push(p.level.as_u8());
+                put_str(&mut buf, &p.authority_id);
+                put_controls(&mut buf, &p.controls);
+            }
+            EventKind::CompartmentAdded(c) => {
+                put_str(&mut buf, &normalize(&c.program_pid));
+                put_str(&mut buf, &normalize(&c.id));
+                put_str(&mut buf, &normalize(&c.nickname));
+                put_opt_norm(&mut buf, c.codeword.as_deref());
+                put_opt_norm(&mut buf, c.parent_id.as_deref());
+                put_opt_level(&mut buf, c.level);
+                put_controls(&mut buf, &c.controls);
+            }
+            EventKind::ProgramControlsChanged {
+                program_pid,
+                compartment_id,
+                add,
+                remove,
+            } => {
+                put_str(&mut buf, &normalize(program_pid));
+                put_opt_norm(&mut buf, compartment_id.as_deref());
+                put_controls(&mut buf, add);
+                put_controls(&mut buf, remove);
+            }
         }
         buf
     }
@@ -253,6 +346,32 @@ fn put_str(buf: &mut Vec<u8>, s: &str) {
     let len = u32::try_from(bytes.len()).expect("field too long");
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(bytes);
+}
+
+fn put_opt_norm(buf: &mut Vec<u8>, s: Option<&str>) {
+    match s.map(normalize).filter(|t| !t.is_empty()) {
+        Some(v) => {
+            buf.push(1);
+            put_str(buf, &v);
+        }
+        None => buf.push(0),
+    }
+}
+
+// Option<Level>: None=0, Some(l)=1+l.as_u8() (so Some(Unclassified)=1 != None=0).
+fn put_opt_level(buf: &mut Vec<u8>, level: Option<crate::marking::Level>) {
+    match level {
+        None => buf.push(0),
+        Some(l) => buf.push(1 + l.as_u8()),
+    }
+}
+
+fn put_controls(buf: &mut Vec<u8>, controls: &[Control]) {
+    buf.extend_from_slice(&(controls.len() as u32).to_le_bytes());
+    for c in controls {
+        buf.push(c.kind.tag());
+        put_str(buf, &c.value.trim().to_ascii_uppercase());
+    }
 }
 
 pub fn now_rfc3339() -> String {
@@ -358,5 +477,156 @@ mod tests {
             attribution: crate::attribition::Attribution::default(),
         };
         assert!(e.canonical_bytes().starts_with(Event::PREFIX));
+    }
+
+    fn qsv() -> Program {
+        use crate::marking::Level;
+        use crate::program::{Control, ControlKind, SapType};
+        Program {
+            pid: "QSV".into(),
+            nickname: "DILIGENTLY IMPRESSED".into(),
+            codeword: None,
+            sap_type: SapType::Unacknowledged,
+            level: Level::TopSecret,
+            authority_id: "DIA".into(),
+            controls: vec![
+                Control::new(ControlKind::Sci, "TK"),
+                Control::new(ControlKind::Dissem, "NOFORN"),
+            ],
+        }
+    }
+
+    fn hol() -> Compartment {
+        use crate::program::{Control, ControlKind};
+        Compartment {
+            program_pid: "QSV".into(),
+            id: "HOL".into(),
+            nickname: "HOLLERED".into(),
+            codeword: None,
+            parent_id: None,
+            controls: vec![Control::new(ControlKind::Sci, "TK")],
+            level: None,
+        }
+    }
+
+    fn wrap(kind: EventKind) -> Event {
+        Event {
+            kind,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            attribution: crate::attribition::Attribution::default(),
+        }
+    }
+
+    #[test]
+    fn program_kind_tags_are_6_7_8() {
+        let created = wrap(EventKind::ProgramCreated(qsv()));
+        let added = wrap(EventKind::CompartmentAdded(hol()));
+        let changed = wrap(EventKind::ProgramControlsChanged {
+            program_pid: "QSV".into(),
+            compartment_id: None,
+            add: vec![],
+            remove: vec![],
+        });
+        assert_eq!(created.canonical_bytes()[Event::PREFIX.len()], 6);
+        assert_eq!(added.canonical_bytes()[Event::PREFIX.len()], 7);
+        assert_eq!(changed.canonical_bytes()[Event::PREFIX.len()], 8);
+        // Existing kinds keep their tags so old hashes stay valid.
+        let retired = wrap(EventKind::Retired {
+            name: "x".into(),
+            reason: "y".into(),
+            authority_id: "DIA".into(),
+        });
+        assert_eq!(retired.canonical_bytes()[Event::PREFIX.len()], 2);
+    }
+
+    #[test]
+    fn program_events_bind_delta_into_hash() {
+        let a = wrap(EventKind::ProgramCreated(qsv()));
+        assert_eq!(a.hash(), a.hash());
+        assert!(a
+            .canonical_bytes()
+            .windows(b"QSV".len())
+            .any(|w| w == b"QSV"));
+        assert!(a.issued_name().is_none());
+
+        let mut other = qsv();
+        other.controls.pop();
+        let b = wrap(EventKind::ProgramCreated(other));
+        assert_ne!(a.hash(), b.hash());
+
+        let c = wrap(EventKind::CompartmentAdded(hol()));
+        assert!(c
+            .canonical_bytes()
+            .windows(b"HOL".len())
+            .any(|w| w == b"HOL"));
+
+        let d = wrap(EventKind::ProgramControlsChanged {
+            program_pid: "QSV".into(),
+            compartment_id: Some("HOL".into()),
+            add: vec![crate::program::Control::new(
+                crate::program::ControlKind::Sci,
+                "SI",
+            )],
+            remove: vec![],
+        });
+        let e = wrap(EventKind::ProgramControlsChanged {
+            program_pid: "QSV".into(),
+            compartment_id: None,
+            add: vec![crate::program::Control::new(
+                crate::program::ControlKind::Sci,
+                "SI",
+            )],
+            remove: vec![],
+        });
+        assert_ne!(d.hash(), e.hash());
+        assert!(d.canonical_bytes().windows(b"SI".len()).any(|w| w == b"SI"));
+    }
+
+    #[test]
+    fn program_events_serde_and_fold_roundtrip() {
+        let kinds = [
+            EventKind::from(ProgramEvent::Created(qsv())),
+            EventKind::from(ProgramEvent::CompartmentAdded(hol())),
+            EventKind::from(ProgramEvent::ControlsChanged {
+                program_pid: "QSV".into(),
+                compartment_id: Some("HOL".into()),
+                add: vec![],
+                remove: vec![crate::program::Control::new(
+                    crate::program::ControlKind::Dissem,
+                    "NOFORN",
+                )],
+            }),
+        ];
+        for kind in kinds {
+            let json = serde_json::to_string(&kind).unwrap();
+            let back: EventKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(kind.type_name(), back.type_name());
+            let pe = back.to_program_event().expect("program kind");
+            let via: EventKind = pe.into();
+            assert_eq!(wrap(kind.clone()).hash(), wrap(via).hash(),);
+        }
+    }
+
+    #[test]
+    fn issued_program_bind_is_not_in_canonical() {
+        let kind = |pid: Option<String>| EventKind::Issued {
+            name: "GRANITE SPIRE".into(),
+            name_type: NameType::Nickname,
+            authority_id: "DIA".into(),
+            authority_pk: "aa".into(),
+            pool_id: "p".into(),
+            sequence: 1,
+            nonce: 0,
+            vrf_proof: "00".into(),
+            vrf_output: "00".into(),
+            indices: vec![1, 2],
+            marking: crate::marking::Marking::default(),
+            program_pid: pid,
+            compartment_id: None,
+        };
+        assert_eq!(
+            wrap(kind(None)).hash(),
+            wrap(kind(Some("QSV".into()))).hash()
+        );
     }
 }

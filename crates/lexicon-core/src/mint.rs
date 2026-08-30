@@ -3,6 +3,7 @@ use crate::error::{Error, Result};
 use crate::events::{AttemptReason, Event, EventKind};
 use crate::ledger::Ledger;
 use crate::linter::{LintEngine, NameCandidate};
+use crate::marking::{Level, Marking};
 use crate::merkle;
 use crate::pool::PoolSet;
 use crate::sig::Signer;
@@ -18,8 +19,11 @@ pub struct MintRequest {
     /// Pin a cryptonym digraph instead of VRF-picking from the agency allocation.
     pub digraph: Option<String>,
     /// Classification marking bound to the issued name (signed + hashed).
-    pub marking: crate::marking::Marking,
+    /// Ignored for program-bound codeword/cryptonym — those derive from the program.
+    pub marking: Marking,
     pub attribution: crate::attribition::Attribution,
+    pub program_pid: Option<String>,
+    pub compartment_id: Option<String>,
 }
 
 impl MintRequest {
@@ -29,8 +33,10 @@ impl MintRequest {
             pool_id: POOL_ID_V1.into(),
             max_attempts: 64,
             digraph: None,
-            marking: crate::marking::Marking::default(),
+            marking: Marking::default(),
             attribution: crate::attribition::Attribution::default(),
+            program_pid: None,
+            compartment_id: None,
         }
     }
 }
@@ -50,7 +56,7 @@ pub struct MintedName {
     pub ledger_seq: u64,
     pub event_hash: String,
     pub inclusion: merkle::InclusionProof,
-    pub marking: crate::marking::Marking,
+    pub marking: Marking,
 }
 
 pub struct Minter<'a> {
@@ -86,6 +92,15 @@ impl<'a> Minter<'a> {
         if sizes.contains(&0) {
             return Err(Error::EmptyPool(req.pool_id.clone()));
         }
+
+        let (program_pid, compartment_id) = bind_program(&req)?;
+        let marking = resolve_mint_marking(
+            self.ledger,
+            req.name_type,
+            &req.marking,
+            program_pid.as_deref(),
+            compartment_id.as_deref(),
+        )?;
 
         let sequence = self.ledger.next_seq()?;
         let mut nonce = 0u32;
@@ -165,7 +180,9 @@ impl<'a> Minter<'a> {
                 vrf_proof: hex::encode(proof.as_bytes()),
                 vrf_output: hex::encode(beta.as_bytes()),
                 indices: indices.clone(),
-                marking: req.marking.clone(),
+                marking: marking.clone(),
+                program_pid: program_pid.clone(),
+                compartment_id: compartment_id.clone(),
             });
             event.attribution = req.attribution.clone();
             let event_hash = event.hash();
@@ -186,7 +203,7 @@ impl<'a> Minter<'a> {
                 ledger_seq,
                 event_hash: hex::encode(event_hash),
                 inclusion,
-                marking: req.marking.clone(),
+                marking,
             });
         }
 
@@ -221,6 +238,68 @@ impl<'a> Minter<'a> {
         self.ledger.append(ev, self.signer)?;
         Ok(())
     }
+}
+
+fn opt_key(s: Option<&str>) -> Option<String> {
+    s.map(|s| s.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty())
+}
+
+fn bind_program(req: &MintRequest) -> Result<(Option<String>, Option<String>)> {
+    let pid = opt_key(req.program_pid.as_deref());
+    let cid = opt_key(req.compartment_id.as_deref());
+    if cid.is_some() && pid.is_none() {
+        return Err(Error::Parse("compartment_id requires program_pid".into()));
+    }
+    Ok((pid, cid))
+}
+
+fn name_stays_unclassified(t: NameType) -> bool {
+    matches!(
+        t,
+        NameType::Nickname | NameType::ExerciseTerm | NameType::SapDesignator
+    )
+}
+
+fn resolve_mint_marking(
+    ledger: &Ledger,
+    name_type: NameType,
+    requested: &Marking,
+    program_pid: Option<&str>,
+    compartment_id: Option<&str>,
+) -> Result<Marking> {
+    let marking = match (program_pid, name_type) {
+        (Some(pid), NameType::CodeWord | NameType::Cryptonym) => {
+            ledger.program_set()?.derive_marking(pid, compartment_id)?
+        }
+        (Some(pid), _) => {
+            require_binding(ledger, pid, compartment_id)?;
+            requested.clone()
+        }
+        (None, _) => requested.clone(),
+    };
+
+    if name_stays_unclassified(name_type) && marking.level > Level::Unclassified {
+        return Err(Error::Parse(format!(
+            "{name_type} names stay unclassified (got {})",
+            marking.level.as_str()
+        )));
+    }
+    Ok(marking)
+}
+
+fn require_binding(ledger: &Ledger, pid: &str, cid: Option<&str>) -> Result<()> {
+    if ledger.program(pid)?.is_none() {
+        return Err(Error::Parse(format!("unknown program: {pid}")));
+    }
+    if let Some(cid) = cid {
+        if ledger.compartment(pid, cid)?.is_none() {
+            return Err(Error::Parse(format!(
+                "unknown compartment {cid} on program {pid}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Verify name was fairly minted: VRF proof, indices, pool words.
@@ -365,12 +444,9 @@ mod tests {
         let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
         let c = minter
             .mint(MintRequest {
-                name_type: NameType::Cryptonym,
-                pool_id: POOL_ID_V1.into(),
-                max_attempts: 32,
                 digraph: Some("AE".into()),
-                marking: crate::marking::Marking::default(),
-                attribution: crate::attribition::Attribution::default(),
+                max_attempts: 32,
+                ..MintRequest::new(NameType::Cryptonym)
             })
             .unwrap();
         assert!(c.name.starts_with("AE"), "{}", c.name);
@@ -413,6 +489,234 @@ mod tests {
             ledger: &mut ledger,
         };
         let minted = minter.mint(MintRequest::new(NameType::Nickname)).unwrap();
+        verify_mint(&minted, &pools).unwrap();
+    }
+
+    fn ts() -> Marking {
+        Marking {
+            level: Level::TopSecret,
+            ..Default::default()
+        }
+    }
+
+    fn seed_qsv(ledger: &mut Ledger, auth: &Authority) {
+        use crate::program::{Compartment, Control, ControlKind, Program, SapType};
+        ledger
+            .append(
+                Event::new(EventKind::ProgramCreated(Program {
+                    pid: "QSV".into(),
+                    nickname: "DILIGENTLY IMPRESSED".into(),
+                    codeword: None,
+                    sap_type: SapType::Unacknowledged,
+                    level: Level::TopSecret,
+                    authority_id: auth.id.clone(),
+                    controls: vec![
+                        Control::new(ControlKind::Sci, "TK"),
+                        Control::new(ControlKind::Dissem, "NOFORN"),
+                    ],
+                })),
+                auth,
+            )
+            .unwrap();
+        ledger
+            .append(
+                Event::new(EventKind::CompartmentAdded(Compartment {
+                    program_pid: "QSV".into(),
+                    id: "HOL".into(),
+                    nickname: "HOLLERED".into(),
+                    codeword: None,
+                    parent_id: None,
+                    controls: vec![Control::new(ControlKind::Sci, "TK")],
+                    level: None,
+                })),
+                auth,
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn nickname_stays_u_rejects_classified() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        for ty in [
+            NameType::Nickname,
+            NameType::ExerciseTerm,
+            NameType::SapDesignator,
+        ] {
+            let err = minter
+                .mint(MintRequest {
+                    marking: ts(),
+                    ..MintRequest::new(ty)
+                })
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::Parse(ref s) if s.contains("stay unclassified")),
+                "{ty}: {err}"
+            );
+        }
+        assert!(minter.ledger.is_empty().unwrap());
+    }
+
+    #[test]
+    fn nickname_cui_is_rejected() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        let err = minter
+            .mint(MintRequest {
+                marking: Marking {
+                    level: Level::Cui,
+                    ..Default::default()
+                },
+                ..MintRequest::new(NameType::Nickname)
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Parse(ref s) if s.contains("stay unclassified")),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn program_bound_codeword_derives_and_ignores_request() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        seed_qsv(&mut ledger, &auth);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        let minted = minter
+            .mint(MintRequest {
+                marking: Marking::default(),
+                program_pid: Some("qsv".into()),
+                compartment_id: Some("hol".into()),
+                ..MintRequest::new(NameType::CodeWord)
+            })
+            .unwrap();
+        assert_eq!(minted.marking.to_string(), "TS//TK//SAR-QSV-HOL//NF");
+        verify_mint(&minted, &pools).unwrap();
+        let rec = minter.ledger.lookup(&minted.name).unwrap().unwrap();
+        assert_eq!(rec.marking, "TS//TK//SAR-QSV-HOL//NF");
+        assert_eq!(rec.program_pid.as_deref(), Some("QSV"));
+        assert_eq!(rec.compartment_id.as_deref(), Some("HOL"));
+    }
+
+    #[test]
+    fn program_bound_nickname_records_pid_stays_u() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        seed_qsv(&mut ledger, &auth);
+        for ty in [
+            NameType::Nickname,
+            NameType::ExerciseTerm,
+            NameType::SapDesignator,
+        ] {
+            let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+            let minted = minter
+                .mint(MintRequest {
+                    program_pid: Some("QSV".into()),
+                    ..MintRequest::new(ty)
+                })
+                .unwrap();
+            assert_eq!(minted.marking, Marking::default(), "{ty}");
+            verify_mint(&minted, &pools).unwrap();
+            let rec = minter.ledger.lookup(&minted.name).unwrap().unwrap();
+            assert_eq!(rec.marking, "U", "{ty}");
+            assert_eq!(rec.program_pid.as_deref(), Some("QSV"), "{ty}");
+            assert!(rec.compartment_id.is_none(), "{ty}");
+        }
+    }
+
+    #[test]
+    fn program_bound_nickname_rejects_classified_even_with_program() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        seed_qsv(&mut ledger, &auth);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        let err = minter
+            .mint(MintRequest {
+                marking: ts(),
+                program_pid: Some("QSV".into()),
+                ..MintRequest::new(NameType::Nickname)
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse(ref s) if s.contains("stay unclassified")));
+    }
+
+    #[test]
+    fn free_standing_codeword_keeps_requested_marking() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        let minted = minter
+            .mint(MintRequest {
+                marking: ts(),
+                ..MintRequest::new(NameType::CodeWord)
+            })
+            .unwrap();
+        assert_eq!(minted.marking.level, Level::TopSecret);
+        verify_mint(&minted, &pools).unwrap();
+    }
+
+    #[test]
+    fn compartment_requires_program() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        let err = minter
+            .mint(MintRequest {
+                compartment_id: Some("HOL".into()),
+                ..MintRequest::new(NameType::CodeWord)
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse(ref s) if s.contains("compartment_id requires")));
+    }
+
+    #[test]
+    fn unknown_program_fails_before_issue() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        let err = minter
+            .mint(MintRequest {
+                program_pid: Some("QSV".into()),
+                ..MintRequest::new(NameType::CodeWord)
+            })
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse(ref s) if s.contains("unknown program")));
+        assert!(minter.ledger.is_empty().unwrap());
+    }
+
+    #[test]
+    fn program_bound_cryptonym_derives() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("CIA", [19u8; 32]);
+        seed_qsv(&mut ledger, &auth);
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
+        let minted = minter
+            .mint(MintRequest {
+                program_pid: Some("QSV".into()),
+                ..MintRequest::new(NameType::Cryptonym)
+            })
+            .unwrap();
+        assert_eq!(minted.marking.to_string(), "TS//TK//SAR-QSV//NF");
         verify_mint(&minted, &pools).unwrap();
     }
 }

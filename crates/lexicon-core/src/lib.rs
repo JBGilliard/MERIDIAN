@@ -14,6 +14,7 @@ pub mod marking;
 pub mod merkle;
 pub mod mint;
 pub mod pool;
+pub mod program;
 pub mod sig;
 pub mod types;
 pub mod vrf;
@@ -29,6 +30,9 @@ pub use linter::{LintEngine, LintHit, LintRule, LintSeverity, NameCandidate, Rej
 pub use merkle::InclusionProof;
 pub use mint::{verify_issued, verify_mint, MintRequest, MintedName, Minter};
 pub use pool::{Pool, PoolSet};
+pub use program::{
+    derive_marking, Compartment, Control, ControlKind, Program, ProgramEvent, ProgramSet, SapType,
+};
 #[cfg(feature = "pq")]
 pub use sig::MlDsaSigner;
 pub use sig::{SigAlg, Signature, Signer};

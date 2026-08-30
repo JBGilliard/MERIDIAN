@@ -1,9 +1,13 @@
 use crate::authority::Authority;
 use crate::error::{Error, Result};
 use crate::events::{now_rfc3339, Event, EventKind, NameStatus};
+use crate::marking::{Level, Marking};
 use crate::merkle::{self, InclusionProof};
+use crate::program::{
+    Compartment, Control, ControlKind, Program, ProgramEvent, ProgramSet, SapType,
+};
 use crate::sig::{Signature, Signer};
-use crate::types::normalize;
+use crate::types::{normalize, NameType};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -126,6 +130,76 @@ impl Ledger {
             }
             self.conn.execute_batch("PRAGMA user_version = 2")?;
         }
+        if current < 3 {
+            self.conn.execute_batch(
+                "
+                CREATE TABLE IF NOT EXISTS programs (
+                    pid TEXT PRIMARY KEY,
+                    nickname TEXT NOT NULL,
+                    codeword TEXT,
+                    sap_type TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    authority_id TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS program_controls (
+                    program_pid TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    PRIMARY KEY (program_pid, kind, value),
+                    FOREIGN KEY (program_pid) REFERENCES programs(pid)
+                );
+                CREATE TABLE IF NOT EXISTS compartments (
+                    program_pid TEXT NOT NULL,
+                    id TEXT NOT NULL,
+                    nickname TEXT NOT NULL,
+                    codeword TEXT,
+                    parent_id TEXT,
+                    level TEXT,
+                    PRIMARY KEY (program_pid, id),
+                    FOREIGN KEY (program_pid) REFERENCES programs(pid)
+                );
+                CREATE TABLE IF NOT EXISTS compartment_controls (
+                    program_pid TEXT NOT NULL,
+                    compartment_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    PRIMARY KEY (program_pid, compartment_id, kind, value),
+                    FOREIGN KEY (program_pid, compartment_id)
+                        REFERENCES compartments(program_pid, id)
+                );
+                ",
+            )?;
+            let cols = self
+                .conn
+                .prepare("SELECT * FROM names LIMIT 0")?
+                .column_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
+            if !cols.iter().any(|c| c == "program_pid") {
+                self.conn
+                    .execute("ALTER TABLE names ADD COLUMN program_pid TEXT", [])?;
+            }
+            if !cols.iter().any(|c| c == "compartment_id") {
+                self.conn
+                    .execute("ALTER TABLE names ADD COLUMN compartment_id TEXT", [])?;
+            }
+            self.conn.execute_batch("PRAGMA user_version = 3")?;
+        }
+        if current < 4 {
+            let cols: Vec<String> = self
+                .conn
+                .prepare("SELECT * FROM compartments LIMIT 0")?
+                .column_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            if !cols.iter().any(|c| c == "level") {
+                self.conn
+                    .execute("ALTER TABLE compartments ADD COLUMN level TEXT", [])?;
+            }
+            self.conn.execute_batch("PRAGMA user_version = 4")?;
+        }
         Ok(())
     }
 
@@ -203,13 +277,31 @@ impl Ledger {
                 name_type,
                 authority_id,
                 marking,
+                program_pid,
+                compartment_id,
                 ..
             } => {
                 let key = normalize(name);
+                let (pid, cid) = bind_keys(program_pid.as_deref(), compartment_id.as_deref())?;
+                if let Some(ref pid) = pid {
+                    require_program(&tx, pid)?;
+                    if let Some(ref cid) = cid {
+                        require_compartment(&tx, pid, cid)?;
+                    }
+                }
                 tx.execute(
-                    "INSERT INTO names (normalized, display, status, event_seq, name_type, authority_id, marking)
-                     VALUES (?1, ?2, 'issued', ?3, ?4, ?5, ?6)",
-                    params![key, name, seq as i64, name_type.as_str(), authority_id, marking.to_string()],
+                    "INSERT INTO names (normalized, display, status, event_seq, name_type, authority_id, marking, program_pid, compartment_id)
+                     VALUES (?1, ?2, 'issued', ?3, ?4, ?5, ?6, ?7, ?8)",
+                    params![
+                        key,
+                        name,
+                        seq as i64,
+                        name_type.as_str(),
+                        authority_id,
+                        marking.to_string(),
+                        pid,
+                        cid
+                    ],
                 )?;
             }
             EventKind::Retired {
@@ -221,6 +313,16 @@ impl Ledger {
                 name, authority_id, ..
             } => {
                 update_status(&tx, name, NameStatus::Revoked, seq, authority_id)?;
+            }
+            EventKind::ProgramCreated(p) => persist_program_created(&tx, p)?,
+            EventKind::CompartmentAdded(c) => persist_compartment_added(&tx, c)?,
+            EventKind::ProgramControlsChanged {
+                program_pid,
+                compartment_id,
+                add,
+                remove,
+            } => {
+                persist_controls_changed(&tx, program_pid, compartment_id.as_deref(), add, remove)?
             }
             EventKind::KeyRotated { .. } | EventKind::Attempt { .. } => {}
         }
@@ -325,16 +427,17 @@ impl Ledger {
     fn verify_name_index(&self) -> Result<()> {
         let mut stmt = self
             .conn
-            .prepare("SELECT normalized, status, event_seq FROM names")?;
+            .prepare("SELECT normalized, event_seq, program_pid, compartment_id FROM names")?;
         let rows = stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
             ))
         })?;
         for row in rows {
-            let (name, _status, seq) = row?;
+            let (name, seq, pid, cid) = row?;
             let exists: bool = self.conn.query_row(
                 "SELECT EXISTS(SELECT 1 FROM events WHERE seq = ?1)",
                 [seq],
@@ -344,6 +447,30 @@ impl Ledger {
                 return Err(Error::LedgerCorrupt(format!(
                     "name {name} points at missing seq {seq}"
                 )));
+            }
+            if let Some(pid) = opt_key(pid.as_deref()) {
+                let exists: bool = self.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM programs WHERE pid = ?1)",
+                    [&pid],
+                    |r| r.get(0),
+                )?;
+                if !exists {
+                    return Err(Error::LedgerCorrupt(format!(
+                        "name {name} bound to missing program {pid}"
+                    )));
+                }
+                if let Some(cid) = opt_key(cid.as_deref()) {
+                    let exists: bool = self.conn.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM compartments WHERE program_pid = ?1 AND id = ?2)",
+                        params![pid, cid],
+                        |r| r.get(0),
+                    )?;
+                    if !exists {
+                        return Err(Error::LedgerCorrupt(format!(
+                            "name {name} bound to missing compartment {cid} on {pid}"
+                        )));
+                    }
+                }
             }
         }
         Ok(())
@@ -373,56 +500,177 @@ impl Ledger {
         Ok(out)
     }
 
+    pub fn program(&self, pid: &str) -> Result<Option<Program>> {
+        let pid = pid_key(pid);
+        let row = self
+            .conn
+            .query_row(
+                "SELECT pid, nickname, codeword, sap_type, level, authority_id FROM programs WHERE pid = ?1",
+                [&pid],
+                program_row,
+            )
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some(t) => Ok(Some(assemble_program(&self.conn, t)?)),
+        }
+    }
+
+    /// The display-name namespace is global across all types and programs.
+    /// Compartment nicknames/codewords are steward-assigned (not VRF-minted),
+    /// so they must be checked against the `names` table AND every other
+    /// compartment's nickname/codeword to preserve the deconfliction invariant.
+    pub fn is_display_name_taken(&self, name: &str) -> Result<bool> {
+        let key = normalize(name);
+        if key.is_empty() {
+            return Ok(false);
+        }
+        if self.name_status(&key)?.is_some() {
+            return Ok(true);
+        }
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM compartments
+                WHERE UPPER(nickname) = ?1
+                   OR UPPER(codeword) = ?1
+            )",
+            [&key],
+            |r| r.get(0),
+        )?;
+        Ok(exists)
+    }
+
+    pub fn programs(&self) -> Result<Vec<Program>> {
+        let mut raw = Vec::new();
+        {
+            let mut stmt = self.conn.prepare(
+                "SELECT pid, nickname, codeword, sap_type, level, authority_id FROM programs ORDER BY pid",
+            )?;
+            let rows = stmt.query_map([], program_row)?;
+            for row in rows {
+                raw.push(row?);
+            }
+        }
+        let mut out = Vec::new();
+        for t in raw {
+            out.push(assemble_program(&self.conn, t)?);
+        }
+        Ok(out)
+    }
+
+    pub fn compartment(&self, pid: &str, id: &str) -> Result<Option<Compartment>> {
+        let pid = pid_key(pid);
+        let id = pid_key(id);
+        let row = self
+            .conn
+            .query_row(
+                "SELECT program_pid, id, nickname, codeword, parent_id, level FROM compartments WHERE program_pid = ?1 AND id = ?2",
+                params![pid, id],
+                compartment_row,
+            )
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some(t) => Ok(Some(assemble_compartment(&self.conn, t)?)),
+        }
+    }
+
+    pub fn compartments(&self, pid: &str) -> Result<Vec<Compartment>> {
+        self.load_compartments(Some(&pid_key(pid)))
+    }
+
+    /// Fold of program/compartment tables. Same shape as event materialization.
+    pub fn program_set(&self) -> Result<ProgramSet> {
+        let mut set = ProgramSet::new();
+        for p in self.programs()? {
+            set.apply(ProgramEvent::Created(p))
+                .map_err(|e| Error::LedgerCorrupt(format!("programs index: {e}")))?;
+        }
+        for c in self.load_compartments(None)? {
+            set.apply(ProgramEvent::CompartmentAdded(c))
+                .map_err(|e| Error::LedgerCorrupt(format!("compartments index: {e}")))?;
+        }
+        Ok(set)
+    }
+
+    fn load_compartments(&self, pid: Option<&str>) -> Result<Vec<Compartment>> {
+        let mut raw = Vec::new();
+        {
+            let sql = match pid {
+                Some(_) => {
+                    "SELECT program_pid, id, nickname, codeword, parent_id, level FROM compartments WHERE program_pid = ?1 ORDER BY id"
+                }
+                None => {
+                    "SELECT program_pid, id, nickname, codeword, parent_id, level FROM compartments ORDER BY program_pid, id"
+                }
+            };
+            let mut stmt = self.conn.prepare(sql)?;
+            match pid {
+                Some(pid) => {
+                    let rows = stmt.query_map([pid], compartment_row)?;
+                    for row in rows {
+                        raw.push(row?);
+                    }
+                }
+                None => {
+                    let rows = stmt.query_map([], compartment_row)?;
+                    for row in rows {
+                        raw.push(row?);
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for t in raw {
+            out.push(assemble_compartment(&self.conn, t)?);
+        }
+        Ok(out)
+    }
+
     /// One name's full record, or None if unknown.
     pub fn lookup(&self, name: &str) -> Result<Option<NameRecord>> {
         let key = normalize(name);
         let row = self
             .conn
             .query_row(
-                "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking, e.attribution FROM names n JOIN events e ON n.event_seq = e.seq WHERE n.normalized = ?1",
+                "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking, e.attribution, n.program_pid, n.compartment_id FROM names n JOIN events e ON n.event_seq = e.seq WHERE n.normalized = ?1",
                 [&key],
-                |r| {
-                    Ok(NameRecord {
-                        display: r.get(0)?,
-                        normalized: r.get(1)?,
-                        status: r.get(2)?,
-                        name_type: r.get(3)?,
-                        authority_id: r.get(4)?,
-                        event_seq: r.get::<_, i64>(5)? as u64,
-                        created_at: r.get(6)?,
-                        marking: r.get(7)?,
-                        attribution: r.get(8)?,
-                    })
-                },
+                name_record_row,
             )
             .optional()?;
-        Ok(row)
+        match row {
+            None => Ok(None),
+            Some(mut rec) => {
+                self.resolve_name_marking(&mut rec)?;
+                Ok(Some(rec))
+            }
+        }
     }
 
     /// Every name record, ordered by issue seq. The CLI filters
     /// in Rust — keeps SQL out of the trust path.
     pub fn name_records(&self) -> Result<Vec<NameRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking, e.attribution FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
+            "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking, e.attribution, n.program_pid, n.compartment_id FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
         )?;
-        let rows = stmt.query_map([], |r| {
-            Ok(NameRecord {
-                display: r.get(0)?,
-                normalized: r.get(1)?,
-                status: r.get(2)?,
-                name_type: r.get(3)?,
-                authority_id: r.get(4)?,
-                event_seq: r.get::<_, i64>(5)? as u64,
-                created_at: r.get(6)?,
-                marking: r.get(7)?,
-                attribution: r.get(8)?,
-            })
-        })?;
+        let rows = stmt.query_map([], name_record_row)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
         }
+        drop(stmt);
+        let set = self.program_set()?;
+        for rec in &mut out {
+            resolve_name_marking_with(&set, rec)?;
+        }
         Ok(out)
+    }
+
+    fn resolve_name_marking(&self, rec: &mut NameRecord) -> Result<()> {
+        if rec.program_pid.is_some() && name_derives(&rec.name_type) {
+            resolve_name_marking_with(&self.program_set()?, rec)?;
+        }
+        Ok(())
     }
 
     /// Raw event rows for offline audit. Includes canonical,
@@ -452,14 +700,35 @@ impl Ledger {
     }
 
     /// Container marking of the ledger: max of every name's
-    /// marking. Derived, not stored.
-    pub fn aggregate_marking(&self) -> Result<crate::marking::Marking> {
-        let mut stmt = self.conn.prepare("SELECT marking FROM names")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut agg = crate::marking::Marking::default();
-        for r in rows {
-            let m = crate::marking::Marking::from_stored(&r?)
-                .map_err(|e| crate::error::Error::LedgerCorrupt(format!("bad marking: {e}")))?;
+    /// marking. Program-bound names derive from current controls;
+    /// free-standing names use the stored string.
+    pub fn aggregate_marking(&self) -> Result<Marking> {
+        let set = self.program_set()?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT marking, program_pid, compartment_id FROM names")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let mut agg = Marking::default();
+        for row in rows {
+            let (stored, pid, cid) = row?;
+            let pid = opt_key(pid.as_deref());
+            let cid = opt_key(cid.as_deref());
+            let m = if let Some(pid) = pid {
+                set.derive_marking(&pid, cid.as_deref())
+                    .map_err(|e| Error::LedgerCorrupt(format!("derive marking: {e}")))?
+            } else {
+                let s = stored
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "U".into());
+                Marking::from_stored(&s)
+                    .map_err(|e| Error::LedgerCorrupt(format!("bad marking: {e}")))?
+            };
             agg = agg.max(&m);
         }
         Ok(agg)
@@ -477,6 +746,10 @@ pub struct NameRecord {
     pub created_at: String,
     pub marking: String,
     pub attribution: String,
+    #[serde(default)]
+    pub program_pid: Option<String>,
+    #[serde(default)]
+    pub compartment_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -492,7 +765,7 @@ pub struct EventRow {
     pub signature: String,
 }
 
-const MAX_SCHEMA_VERSION: i64 = 2;
+const MAX_SCHEMA_VERSION: i64 = 4;
 
 fn update_status(
     tx: &rusqlite::Transaction<'_>,
@@ -528,6 +801,317 @@ fn update_status(
     Ok(())
 }
 
+fn pid_key(s: &str) -> String {
+    s.trim().to_ascii_uppercase()
+}
+
+fn opt_key(s: Option<&str>) -> Option<String> {
+    s.map(pid_key).filter(|s| !s.is_empty())
+}
+
+fn bind_keys(
+    program_pid: Option<&str>,
+    compartment_id: Option<&str>,
+) -> Result<(Option<String>, Option<String>)> {
+    let pid = opt_key(program_pid);
+    let cid = opt_key(compartment_id);
+    if cid.is_some() && pid.is_none() {
+        return Err(Error::Parse("compartment_id requires program_pid".into()));
+    }
+    Ok((pid, cid))
+}
+
+fn name_derives(name_type: &str) -> bool {
+    matches!(
+        name_type.parse::<NameType>(),
+        Ok(NameType::CodeWord | NameType::Cryptonym)
+    )
+}
+
+fn require_program(tx: &rusqlite::Transaction<'_>, pid: &str) -> Result<()> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM programs WHERE pid = ?1)",
+        [pid],
+        |r| r.get(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(Error::Parse(format!("unknown program: {pid}")))
+    }
+}
+
+fn require_compartment(tx: &rusqlite::Transaction<'_>, pid: &str, cid: &str) -> Result<()> {
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM compartments WHERE program_pid = ?1 AND id = ?2)",
+        params![pid, cid],
+        |r| r.get(0),
+    )?;
+    if exists {
+        Ok(())
+    } else {
+        Err(Error::Parse(format!(
+            "unknown compartment {cid} on program {pid}"
+        )))
+    }
+}
+
+fn persist_program_created(tx: &rusqlite::Transaction<'_>, program: &Program) -> Result<()> {
+    let pid = pid_key(&program.pid);
+    if pid.is_empty() {
+        return Err(Error::Parse("program pid is empty".into()));
+    }
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM programs WHERE pid = ?1)",
+        [&pid],
+        |r| r.get(0),
+    )?;
+    if exists {
+        return Err(Error::Parse(format!("program already exists: {pid}")));
+    }
+    let nickname = normalize(&program.nickname);
+    let codeword = program
+        .codeword
+        .as_deref()
+        .map(normalize)
+        .filter(|s| !s.is_empty());
+    tx.execute(
+        "INSERT INTO programs (pid, nickname, codeword, sap_type, level, authority_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            pid,
+            nickname,
+            codeword,
+            program.sap_type.as_str(),
+            program.level.as_str(),
+            program.authority_id.trim(),
+        ],
+    )?;
+    apply_control_delta(tx, &pid, None, &program.controls, &[])?;
+    Ok(())
+}
+
+fn persist_compartment_added(tx: &rusqlite::Transaction<'_>, c: &Compartment) -> Result<()> {
+    let pid = pid_key(&c.program_pid);
+    let id = pid_key(&c.id);
+    if id.is_empty() {
+        return Err(Error::Parse("compartment id is empty".into()));
+    }
+    require_program(tx, &pid)?;
+    let exists: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM compartments WHERE program_pid = ?1 AND id = ?2)",
+        params![pid, id],
+        |r| r.get(0),
+    )?;
+    if exists {
+        return Err(Error::Parse(format!(
+            "compartment {id} already exists on {pid}"
+        )));
+    }
+    let nickname = normalize(&c.nickname);
+    let codeword = c
+        .codeword
+        .as_deref()
+        .map(normalize)
+        .filter(|s| !s.is_empty());
+    let parent_id = opt_key(c.parent_id.as_deref());
+    let level = c.level.map(|l| l.as_str().to_string());
+    tx.execute(
+        "INSERT INTO compartments (program_pid, id, nickname, codeword, parent_id, level)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![pid, id, nickname, codeword, parent_id, level],
+    )?;
+    apply_control_delta(tx, &pid, Some(&id), &c.controls, &[])?;
+    Ok(())
+}
+
+fn persist_controls_changed(
+    tx: &rusqlite::Transaction<'_>,
+    program_pid: &str,
+    compartment_id: Option<&str>,
+    add: &[Control],
+    remove: &[Control],
+) -> Result<()> {
+    let pid = pid_key(program_pid);
+    require_program(tx, &pid)?;
+    let cid = opt_key(compartment_id);
+    if let Some(ref cid) = cid {
+        require_compartment(tx, &pid, cid)?;
+    }
+    apply_control_delta(tx, &pid, cid.as_deref(), add, remove)
+}
+
+fn apply_control_delta(
+    tx: &rusqlite::Transaction<'_>,
+    pid: &str,
+    cid: Option<&str>,
+    add: &[Control],
+    remove: &[Control],
+) -> Result<()> {
+    for r in remove {
+        let value = pid_key(&r.value);
+        if value.is_empty() {
+            continue;
+        }
+        match cid {
+            None => {
+                tx.execute(
+                    "DELETE FROM program_controls WHERE program_pid = ?1 AND kind = ?2 AND value = ?3",
+                    params![pid, r.kind.as_str(), value],
+                )?;
+            }
+            Some(cid) => {
+                tx.execute(
+                    "DELETE FROM compartment_controls WHERE program_pid = ?1 AND compartment_id = ?2 AND kind = ?3 AND value = ?4",
+                    params![pid, cid, r.kind.as_str(), value],
+                )?;
+            }
+        }
+    }
+    for a in add {
+        let value = pid_key(&a.value);
+        if value.is_empty() {
+            continue;
+        }
+        match cid {
+            None => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO program_controls (program_pid, kind, value) VALUES (?1, ?2, ?3)",
+                    params![pid, a.kind.as_str(), value],
+                )?;
+            }
+            Some(cid) => {
+                tx.execute(
+                    "INSERT OR IGNORE INTO compartment_controls (program_pid, compartment_id, kind, value) VALUES (?1, ?2, ?3, ?4)",
+                    params![pid, cid, a.kind.as_str(), value],
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+type ProgramRow = (String, String, Option<String>, String, String, String);
+
+fn program_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProgramRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+    ))
+}
+
+fn assemble_program(conn: &Connection, row: ProgramRow) -> Result<Program> {
+    let (pid, nickname, codeword, sap_type, level, authority_id) = row;
+    Ok(Program {
+        controls: load_program_controls(conn, &pid)?,
+        pid,
+        nickname,
+        codeword: codeword.filter(|s| !s.is_empty()),
+        sap_type: SapType::parse(&sap_type)
+            .map_err(|_| Error::LedgerCorrupt(format!("bad sap_type: {sap_type}")))?,
+        level: Level::parse(&level)
+            .ok_or_else(|| Error::LedgerCorrupt(format!("bad program level: {level}")))?,
+        authority_id,
+    })
+}
+
+type CompartmentRow = (String, String, String, Option<String>, Option<String>, Option<String>);
+
+fn compartment_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<CompartmentRow> {
+    Ok((
+        r.get(0)?,
+        r.get(1)?,
+        r.get(2)?,
+        r.get(3)?,
+        r.get(4)?,
+        r.get(5)?,
+    ))
+}
+
+fn assemble_compartment(conn: &Connection, row: CompartmentRow) -> Result<Compartment> {
+    let (program_pid, id, nickname, codeword, parent_id, level) = row;
+    Ok(Compartment {
+        controls: load_compartment_controls(conn, &program_pid, &id)?,
+        program_pid,
+        id,
+        nickname,
+        codeword: codeword.filter(|s| !s.is_empty()),
+        parent_id: opt_key(parent_id.as_deref()),
+        level: level.and_then(|s| Level::parse(&s)),
+    })
+}
+
+fn load_program_controls(conn: &Connection, pid: &str) -> Result<Vec<Control>> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, value FROM program_controls WHERE program_pid = ?1 ORDER BY rowid",
+    )?;
+    let rows = stmt.query_map([pid], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (kind, value) = row?;
+        let kind = ControlKind::parse(&kind)
+            .map_err(|_| Error::LedgerCorrupt(format!("bad control kind: {kind}")))?;
+        out.push(Control { kind, value });
+    }
+    Ok(out)
+}
+
+fn load_compartment_controls(conn: &Connection, pid: &str, cid: &str) -> Result<Vec<Control>> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, value FROM compartment_controls WHERE program_pid = ?1 AND compartment_id = ?2 ORDER BY rowid",
+    )?;
+    let rows = stmt.query_map(params![pid, cid], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (kind, value) = row?;
+        let kind = ControlKind::parse(&kind)
+            .map_err(|_| Error::LedgerCorrupt(format!("bad control kind: {kind}")))?;
+        out.push(Control { kind, value });
+    }
+    Ok(out)
+}
+
+fn name_record_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<NameRecord> {
+    Ok(NameRecord {
+        display: r.get(0)?,
+        normalized: r.get(1)?,
+        status: r.get(2)?,
+        name_type: r.get(3)?,
+        authority_id: r.get(4)?,
+        event_seq: r.get::<_, i64>(5)? as u64,
+        created_at: r.get(6)?,
+        marking: r
+            .get::<_, Option<String>>(7)?
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "U".into()),
+        attribution: r.get(8)?,
+        program_pid: opt_key(r.get::<_, Option<String>>(9)?.as_deref()),
+        compartment_id: opt_key(r.get::<_, Option<String>>(10)?.as_deref()),
+    })
+}
+
+fn resolve_name_marking_with(set: &ProgramSet, rec: &mut NameRecord) -> Result<()> {
+    let Some(pid) = rec.program_pid.as_deref() else {
+        return Ok(());
+    };
+    if !name_derives(&rec.name_type) {
+        return Ok(());
+    }
+    rec.marking = set
+        .derive_marking(pid, rec.compartment_id.as_deref())
+        .map_err(|e| Error::LedgerCorrupt(format!("derive marking for {}: {e}", rec.display)))?
+        .to_string();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,6 +1134,8 @@ mod tests {
             vrf_output: "00".into(),
             indices: vec![1, 2],
             marking: crate::marking::Marking::default(),
+            program_pid: None,
+            compartment_id: None,
         });
         let seq = led.append(ev, &auth).unwrap();
         assert_eq!(seq, 1);
@@ -578,6 +1164,8 @@ mod tests {
                 vrf_output: "00".into(),
                 indices: vec![0, 0],
                 marking: crate::marking::Marking::default(),
+                program_pid: None,
+                compartment_id: None,
             }),
             &auth,
         )
@@ -620,6 +1208,8 @@ mod tests {
             vrf_output: "00".into(),
             indices: vec![1, 2],
             marking: crate::marking::Marking::default(),
+            program_pid: None,
+            compartment_id: None,
         });
         ev.attribution = attr.clone();
         led.append(ev, &auth).unwrap();
@@ -647,6 +1237,8 @@ mod tests {
                 vrf_output: "00".into(),
                 indices: vec![1, 2],
                 marking: crate::marking::Marking::default(),
+                program_pid: None,
+                compartment_id: None,
             }),
             &cia,
         )
@@ -711,11 +1303,367 @@ mod tests {
                 vrf_output: "00".into(),
                 indices: vec![1, 2],
                 marking,
+                program_pid: None,
+                compartment_id: None,
             }),
             &auth,
         )
         .unwrap();
         let agg = led.aggregate_marking().unwrap();
-        assert_eq!(agg.to_string(), "TS//SCI/ZZZZ");
+        assert_eq!(agg.to_string(), "TS//ZZZZ");
+    }
+
+    fn qsv() -> Program {
+        Program {
+            pid: "QSV".into(),
+            nickname: "DILIGENTLY IMPRESSED".into(),
+            codeword: None,
+            sap_type: SapType::Unacknowledged,
+            level: Level::TopSecret,
+            authority_id: "DIA".into(),
+            controls: vec![
+                Control::new(ControlKind::Sci, "TK"),
+                Control::new(ControlKind::Dissem, "NOFORN"),
+            ],
+        }
+    }
+
+    fn hol() -> Compartment {
+        Compartment {
+            program_pid: "QSV".into(),
+            id: "HOL".into(),
+            nickname: "HOLLERED".into(),
+            codeword: None,
+            parent_id: None,
+            controls: vec![Control::new(ControlKind::Sci, "TK")],
+            level: None,
+        }
+    }
+
+    fn issued(
+        name: &str,
+        name_type: NameType,
+        auth: &Authority,
+        marking: Marking,
+        program_pid: Option<&str>,
+        compartment_id: Option<&str>,
+    ) -> Event {
+        Event::new(EventKind::Issued {
+            name: name.into(),
+            name_type,
+            authority_id: auth.id.clone(),
+            authority_pk: hex::encode(auth.public_key()),
+            pool_id: "p".into(),
+            sequence: 1,
+            nonce: 0,
+            vrf_proof: "00".into(),
+            vrf_output: "00".into(),
+            indices: vec![1, 2],
+            marking,
+            program_pid: program_pid.map(str::to_string),
+            compartment_id: compartment_id.map(str::to_string),
+        })
+    }
+
+    #[test]
+    fn schema_v4_on_fresh_and_migrated() {
+        let led = Ledger::open_memory().unwrap();
+        let v: i64 = led
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, MAX_SCHEMA_VERSION);
+        led.conn
+            .query_row("SELECT COUNT(*) FROM programs", [], |r| r.get::<_, i64>(0))
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE events (
+                    seq INTEGER PRIMARY KEY,
+                    event_type TEXT NOT NULL,
+                    canonical BLOB NOT NULL,
+                    event_hash BLOB NOT NULL,
+                    signature BLOB NOT NULL,
+                    created_at TEXT NOT NULL,
+                    attribution TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE names (
+                    normalized TEXT PRIMARY KEY,
+                    display TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    event_seq INTEGER NOT NULL,
+                    name_type TEXT NOT NULL,
+                    authority_id TEXT NOT NULL,
+                    marking TEXT NOT NULL DEFAULT 'U'
+                );
+                CREATE TABLE snapshots (
+                    seq INTEGER PRIMARY KEY,
+                    root BLOB NOT NULL,
+                    signature BLOB NOT NULL,
+                    signed_at TEXT NOT NULL,
+                    authority_id TEXT NOT NULL,
+                    authority_pk BLOB NOT NULL,
+                    leaf_count INTEGER NOT NULL
+                );
+                PRAGMA user_version = 2;
+                ",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO names (normalized, display, status, event_seq, name_type, authority_id, marking)
+                 VALUES ('GRANITE SPIRE', 'GRANITE SPIRE', 'issued', 1, 'nickname', 'DIA', 'U')",
+                [],
+            )
+            .unwrap();
+        }
+        let led = Ledger::open(&path).unwrap();
+        let v: i64 = led
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, MAX_SCHEMA_VERSION);
+        let n: i64 = led
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM names WHERE normalized = 'GRANITE SPIRE' AND program_pid IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(led.programs().unwrap().is_empty());
+    }
+
+    #[test]
+    fn program_crud_and_controls_delta() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        led.append(Event::new(EventKind::ProgramCreated(qsv())), &auth)
+            .unwrap();
+        led.append(Event::new(EventKind::CompartmentAdded(hol())), &auth)
+            .unwrap();
+
+        let p = led.program("qsv").unwrap().unwrap();
+        assert_eq!(p.pid, "QSV");
+        assert_eq!(p.nickname, "DILIGENTLY IMPRESSED");
+        assert_eq!(p.sap_type, SapType::Unacknowledged);
+        assert_eq!(p.level, Level::TopSecret);
+        assert_eq!(p.controls.len(), 2);
+
+        let c = led.compartment("QSV", "hol").unwrap().unwrap();
+        assert_eq!(c.id, "HOL");
+        assert_eq!(c.controls.len(), 1);
+        assert_eq!(led.compartments("QSV").unwrap().len(), 1);
+
+        led.append(
+            Event::new(EventKind::ProgramControlsChanged {
+                program_pid: "QSV".into(),
+                compartment_id: None,
+                add: vec![Control::new(ControlKind::Sci, "SI")],
+                remove: vec![Control::new(ControlKind::Dissem, "NOFORN")],
+            }),
+            &auth,
+        )
+        .unwrap();
+        let p = led.program("QSV").unwrap().unwrap();
+        assert!(p
+            .controls
+            .iter()
+            .any(|c| c.kind == ControlKind::Sci && c.value == "SI"));
+        assert!(!p
+            .controls
+            .iter()
+            .any(|c| c.kind == ControlKind::Dissem && c.value == "NOFORN"));
+
+        led.append(
+            Event::new(EventKind::ProgramControlsChanged {
+                program_pid: "QSV".into(),
+                compartment_id: Some("HOL".into()),
+                add: vec![Control::new(ControlKind::Sci, "HCS")],
+                remove: vec![],
+            }),
+            &auth,
+        )
+        .unwrap();
+        let c = led.compartment("QSV", "HOL").unwrap().unwrap();
+        assert!(c.controls.iter().any(|x| x.value == "HCS"));
+        led.verify_chain().unwrap();
+    }
+
+    #[test]
+    fn program_materialize_rejects_dup_and_orphan() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        led.append(Event::new(EventKind::ProgramCreated(qsv())), &auth)
+            .unwrap();
+        let err = led
+            .append(Event::new(EventKind::ProgramCreated(qsv())), &auth)
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse(_)));
+        assert_eq!(led.len().unwrap(), 1);
+
+        let err = led
+            .append(
+                Event::new(EventKind::CompartmentAdded(Compartment {
+                    program_pid: "ZZZ".into(),
+                    ..hol()
+                })),
+                &auth,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse(_)));
+        assert_eq!(led.len().unwrap(), 1);
+    }
+
+    #[test]
+    fn name_join_derives_and_nickname_stays_u() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        led.append(Event::new(EventKind::ProgramCreated(qsv())), &auth)
+            .unwrap();
+        led.append(Event::new(EventKind::CompartmentAdded(hol())), &auth)
+            .unwrap();
+
+        led.append(
+            issued(
+                "DILIGENTLY IMPRESSED",
+                NameType::Nickname,
+                &auth,
+                Marking::default(),
+                Some("QSV"),
+                None,
+            ),
+            &auth,
+        )
+        .unwrap();
+        led.append(
+            issued(
+                "HOLLERED",
+                NameType::CodeWord,
+                &auth,
+                Marking::default(),
+                Some("QSV"),
+                Some("HOL"),
+            ),
+            &auth,
+        )
+        .unwrap();
+
+        let nick = led.lookup("DILIGENTLY IMPRESSED").unwrap().unwrap();
+        assert_eq!(nick.marking, "U");
+        assert_eq!(nick.program_pid.as_deref(), Some("QSV"));
+        assert!(nick.compartment_id.is_none());
+
+        let cw = led.lookup("HOLLERED").unwrap().unwrap();
+        assert_eq!(cw.marking, "TS//TK//SAR-QSV-HOL//NF");
+        assert_eq!(cw.program_pid.as_deref(), Some("QSV"));
+        assert_eq!(cw.compartment_id.as_deref(), Some("HOL"));
+
+        let agg = led.aggregate_marking().unwrap();
+        // Nickname derives SAR-QSV; codeword derives SAR-QSV-HOL; max unions.
+        assert_eq!(agg.to_string(), "TS//TK//SAR-QSV//SAR-QSV-HOL//NF");
+
+        led.append(
+            Event::new(EventKind::ProgramControlsChanged {
+                program_pid: "QSV".into(),
+                compartment_id: None,
+                add: vec![Control::new(ControlKind::Sci, "SI")],
+                remove: vec![Control::new(ControlKind::Dissem, "NOFORN")],
+            }),
+            &auth,
+        )
+        .unwrap();
+        let cw = led.lookup("HOLLERED").unwrap().unwrap();
+        assert_eq!(cw.marking, "TS//TK,SI//SAR-QSV-HOL");
+        led.verify_chain().unwrap();
+    }
+
+    #[test]
+    fn aggregate_derives_program_bound_nickname() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        led.append(Event::new(EventKind::ProgramCreated(qsv())), &auth)
+            .unwrap();
+        led.append(
+            issued(
+                "DILIGENTLY IMPRESSED",
+                NameType::Nickname,
+                &auth,
+                Marking::default(),
+                Some("QSV"),
+                None,
+            ),
+            &auth,
+        )
+        .unwrap();
+        let nick = led.lookup("DILIGENTLY IMPRESSED").unwrap().unwrap();
+        assert_eq!(nick.marking, "U");
+        // Container marking still derives: the program is on the ledger.
+        let agg = led.aggregate_marking().unwrap();
+        assert_eq!(agg.to_string(), "TS//TK//SAR-QSV//NF");
+    }
+
+    #[test]
+    fn bind_requires_existing_program() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        let err = led
+            .append(
+                issued(
+                    "HOLLERED",
+                    NameType::CodeWord,
+                    &auth,
+                    Marking::default(),
+                    Some("QSV"),
+                    None
+                ),
+                &auth,
+            )
+            .unwrap_err();
+        assert!(matches!(err, Error::Parse(_)));
+        assert!(led.is_empty().unwrap());
+    }
+
+    #[test]
+    fn is_display_name_taken_checks_global_namespace() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        led.append(Event::new(EventKind::ProgramCreated(qsv())), &auth)
+            .unwrap();
+        // Free before any issue.
+        assert!(!led.is_display_name_taken("GRANITE SPIRE").unwrap());
+        // Issued name occupies the namespace.
+        led.append(
+            issued(
+                "GRANITE SPIRE",
+                NameType::Nickname,
+                &auth,
+                Marking::default(),
+                None,
+                None,
+            ),
+            &auth,
+        )
+        .unwrap();
+        assert!(led.is_display_name_taken("granite spire").unwrap());
+        // Compartment nickname shares the namespace.
+        led.append(Event::new(EventKind::CompartmentAdded(hol())), &auth)
+            .unwrap();
+        assert!(led.is_display_name_taken("HOLLERED").unwrap());
+        // A codeword on a compartment also counts.
+        let mut c = hol();
+        c.id = "SEN".into();
+        c.codeword = Some("BIKINIED".into());
+        led.append(Event::new(EventKind::CompartmentAdded(c)), &auth)
+            .unwrap();
+        assert!(led.is_display_name_taken("BIKINIED").unwrap());
+        // Unrelated name is still free.
+        assert!(!led.is_display_name_taken("OXIDE").unwrap());
     }
 }
