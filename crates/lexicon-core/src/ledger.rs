@@ -2,6 +2,7 @@ use crate::authority::{self, Authority};
 use crate::error::{Error, Result};
 use crate::events::{now_rfc3339, Event, EventKind, NameStatus};
 use crate::merkle::{self, InclusionProof};
+use crate::sig::{Signature, Signer};
 use crate::types::normalize;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -120,6 +121,7 @@ impl Ledger {
         let canonical = event.canonical_bytes();
         let hash = event.hash();
         let sig = authority.sign(&canonical);
+        let sig_bytes = sig.to_bytes();
         let seq = self.next_seq()?;
 
         let tx = self.conn.transaction()?;
@@ -131,7 +133,7 @@ impl Ledger {
                 event.kind.type_name(),
                 canonical,
                 hash.as_slice(),
-                sig.as_slice(),
+                sig_bytes.as_slice(),
                 event.created_at,
             ],
         )?;
@@ -204,20 +206,21 @@ impl Ledger {
         msg.extend_from_slice(&leaf_count.to_le_bytes());
         msg.extend_from_slice(signed_at.as_bytes());
         let signature = authority.sign(&msg);
+        let sig_bytes = signature.to_bytes();
         let snap = SignedRoot {
             root: hex::encode(root),
             leaf_count,
             signed_at: signed_at.clone(),
             authority_id: authority.id.clone(),
             authority_pk: hex::encode(authority.public_key()),
-            signature: hex::encode(signature),
+            signature: hex::encode(&sig_bytes),
         };
         self.conn.execute(
             "INSERT INTO snapshots (seq, root, signature, signed_at, authority_id, authority_pk, leaf_count)
              VALUES ((SELECT COALESCE(MAX(seq), 0) + 1 FROM snapshots), ?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 root.as_slice(),
-                signature.as_slice(),
+                sig_bytes.as_slice(),
                 signed_at,
                 authority.id,
                 authority.public_key().as_slice(),
@@ -282,15 +285,13 @@ impl Ledger {
         Ok(())
     }
 
-    pub fn verify_event_signature(&self, seq: u64, pk: &[u8; 32]) -> Result<()> {
+    pub fn verify_event_signature(&self, seq: u64, pk: &[u8]) -> Result<()> {
         let (canonical, sig): (Vec<u8>, Vec<u8>) = self.conn.query_row(
             "SELECT canonical, signature FROM events WHERE seq = ?1",
             [seq as i64],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let sig: [u8; 64] = sig
-            .try_into()
-            .map_err(|_| Error::LedgerCorrupt("signature not 64 bytes".into()))?;
+        let sig = Signature::from_bytes(&sig)?;
         authority::verify_signature(pk, &canonical, &sig)
     }
 
@@ -352,7 +353,7 @@ mod tests {
         assert_eq!(seq, 1);
         assert!(led.is_taken("granite  spire").unwrap());
         led.verify_chain().unwrap();
-        led.verify_event_signature(seq, &auth.public_key()).unwrap();
+        led.verify_event_signature(seq, auth.public_key().as_slice()).unwrap();
         let proof = led.inclusion_proof(seq).unwrap();
         assert!(merkle::verify_inclusion(&proof));
     }

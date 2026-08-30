@@ -46,6 +46,9 @@ pub enum Error {
     #[error("signature invalid")]
     BadSignature,
 
+    #[error("unsupported signature algorithm: {0} (not built into this binary)")]
+    UnsupportedAlg(String),
+
     #[error("key error: {0}")]
     Key(String),
 

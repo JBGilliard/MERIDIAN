@@ -94,6 +94,8 @@ pub enum EventKind {
         authority_id: String,
         old_pk: String,
         new_pk: String,
+        #[serde(default)]
+        new_alg: crate::sig::SigAlg,
     },
     Attempt {
         candidate: String,
@@ -192,10 +194,12 @@ impl Event {
                 authority_id,
                 old_pk,
                 new_pk,
+                new_alg,
             } => {
                 put_str(&mut buf, authority_id);
                 put_str(&mut buf, old_pk);
                 put_str(&mut buf, new_pk);
+                buf.push(new_alg.as_u8());
             }
             EventKind::Attempt {
                 candidate,
@@ -259,5 +263,31 @@ mod tests {
         };
         assert_eq!(e.hash(), e.hash());
         assert_eq!(e.issued_name().as_deref(), Some("GRANITE SPIRE"));
+    }
+
+    #[test]
+    fn key_rotation_carries_algorithm() {
+        use crate::sig::SigAlg;
+        let e = Event {
+            kind: EventKind::KeyRotated {
+                authority_id: "DIA".into(),
+                old_pk: "aa".into(),
+                new_pk: "bb".into(),
+                new_alg: SigAlg::Ed25519,
+            },
+            created_at: "2026-01-01T00:00:00Z".into(),
+        };
+        // The algorithm tag is bound into canonical bytes, so a rotation to
+        // a different algorithm produces a different, authenticated event.
+        let bytes = e.canonical_bytes();
+        assert_eq!(e.hash(), e.hash());
+        assert!(bytes.ends_with(&[SigAlg::Ed25519.as_u8()]));
+
+        let json = serde_json::to_string(&e.kind).unwrap();
+        let back: EventKind = serde_json::from_str(&json).unwrap();
+        match back {
+            EventKind::KeyRotated { new_alg, .. } => assert_eq!(new_alg, SigAlg::Ed25519),
+            _ => panic!("wrong kind"),
+        }
     }
 }

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use lexicon_core::events::{Event, EventKind};
 use lexicon_core::ledger::Ledger;
-use lexicon_core::linter::{LintEngine, NameCandidate};
+use lexicon_core::linter::{LintSeverity, NameCandidate};
 use lexicon_core::mint::{verify_mint, MintRequest, Minter};
 use lexicon_core::pool::PoolWord;
 use lexicon_core::types::{normalize, NameType};
@@ -167,7 +167,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let agency = agency.to_ascii_uppercase();
             let auth = load_auth(&cli.data_dir, &agency)?;
             let pools = bundled();
-            let linter = LintEngine::core();
+            let linter = lexicon_pools::bundled_linter();
             let mut ledger = open_ledger(&cli.data_dir)?;
             let mut minter = Minter {
                 authority: &auth,
@@ -206,12 +206,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 name_type: ty,
                 words,
             };
-            let hits = LintEngine::core().check(&candidate);
+            let hits = lexicon_pools::bundled_linter().check(&candidate);
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({
                     "name": candidate.name,
-                    "ok": hits.iter().all(|h| h.severity != lexicon_core::linter::LintSeverity::Reject),
+                    "ok": hits.iter().all(|h| h.severity != LintSeverity::Reject),
                     "hits": hits,
                 }))?
             );

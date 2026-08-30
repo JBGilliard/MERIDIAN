@@ -4,6 +4,11 @@ Reconstructed from Church Committee, FOIA, Family Jewels, and
 [Plausible Denial](https://plausibledenial.org/lexicon/cryptonym).
 These are historical attributions, not operational assignments.
 
+Cryptonym digraphs are a CIA convention. Only CIA carries digraphs in
+`agencies.json`; other agencies (NSA, DIA, ...) have empty digraph lists,
+so `mint --type cryptonym` against them returns `EmptyPool`. Programs like
+PRISM have no digraph prefix — the form doesn't apply outside CIA.
+
 | Digraph | Open-record attribution |
 |---------|-------------------------|
 | AE | Soviet Russia / Eastern Europe division |

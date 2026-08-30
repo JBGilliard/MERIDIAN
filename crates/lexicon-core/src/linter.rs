@@ -1,6 +1,8 @@
+use crate::janap::JanapTable;
 use crate::pool::PoolWord;
 use crate::types::NameType;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +45,14 @@ pub struct LintEngine {
 
 impl LintEngine {
     pub fn core() -> Self {
+        Self::build(Janap119Rule::default())
+    }
+
+    pub fn with_janap(table: &JanapTable) -> Self {
+        Self::build(Janap119Rule::from_table(table))
+    }
+
+    fn build(janap: Janap119Rule) -> Self {
         Self {
             rules: vec![
                 Box::new(BlocklistRule::default()),
@@ -51,7 +61,7 @@ impl LintEngine {
                 Box::new(LivingPersonRule),
                 Box::new(SameWordRule),
                 Box::new(BannedPairRule::default()),
-                Box::new(Janap119Rule::default()),
+                Box::new(janap),
                 Box::new(EuphonyRule),
                 Box::new(TransliterationRule),
                 Box::new(MeaningLeakRule::default()),
@@ -80,6 +90,12 @@ impl LintEngine {
             name_type: NameType::CodeWord,
             words: vec![PoolWord::new(word)],
         })
+    }
+
+    /// Append a rule at runtime. Used by pools to feed bundled data lists
+    /// (e.g. historical-cryptonym reject set) without core hardcoding them.
+    pub fn push_rule(&mut self, rule: Box<dyn LintRule>) {
+        self.rules.push(rule);
     }
 }
 
@@ -326,18 +342,15 @@ impl LintRule for BannedPairRule {
     }
 }
 
+#[derive(Default)]
 struct Janap119Rule {
-    callsigns: Vec<&'static str>,
+    words: HashSet<String>,
 }
 
-impl Default for Janap119Rule {
-    fn default() -> Self {
-        // Sample only. Production should load ACP-119/JANAP-119.
+impl Janap119Rule {
+    fn from_table(table: &JanapTable) -> Self {
         Self {
-            callsigns: vec![
-                "PANTHER", "EAGLE", "HAWK", "VIPER", "MUSTANG", "PHANTOM", "TOMCAT", "HORNET",
-                "FALCON", "RAVEN",
-            ],
+            words: table.word_set().clone(),
         }
     }
 }
@@ -347,16 +360,78 @@ impl LintRule for Janap119Rule {
         "janap119"
     }
     fn check(&self, candidate: &NameCandidate, _: &ExternalHooks) -> Vec<LintHit> {
+        if self.words.is_empty() {
+            return Vec::new();
+        }
         let t = tokens(&candidate.name);
-        self.callsigns
-            .iter()
-            .filter(|c| t.iter().any(|w| w == *c) || compact(&candidate.name) == **c)
-            .map(|c| LintHit {
+        let compact = compact(&candidate.name);
+        let mut hits = Vec::new();
+        for w in &t {
+            if self.words.contains(w) {
+                hits.push(LintHit {
+                    rule: self.name().into(),
+                    severity: LintSeverity::Reject,
+                    detail: format!("JANAP-119A word {w}"),
+                });
+            }
+        }
+        if hits.is_empty() && self.words.contains(&compact) {
+            hits.push(LintHit {
                 rule: self.name().into(),
                 severity: LintSeverity::Reject,
-                detail: format!("JANAP-119/ACP-119 sample collision: {c}"),
-            })
-            .collect()
+                detail: format!("JANAP-119A word {compact}"),
+            });
+        }
+        hits
+    }
+}
+
+/// Generic data-driven reject list. Matches any token or the compacted name
+/// against a HashSet — same shape as Janap119Rule, minus the digraph columns.
+/// Lets pools ship curated reject sets (historical cryptonyms, codenames)
+/// without core hardcoding them.
+pub struct RejectListRule {
+    rule_name: &'static str,
+    words: HashSet<String>,
+}
+
+impl RejectListRule {
+    pub fn new(rule_name: &'static str, words: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            rule_name,
+            words: words.into_iter().map(|w| w.into().to_ascii_uppercase()).collect(),
+        }
+    }
+}
+
+impl LintRule for RejectListRule {
+    fn name(&self) -> &'static str {
+        self.rule_name
+    }
+    fn check(&self, candidate: &NameCandidate, _: &ExternalHooks) -> Vec<LintHit> {
+        if self.words.is_empty() {
+            return Vec::new();
+        }
+        let t = tokens(&candidate.name);
+        let mut hits = Vec::new();
+        for w in &t {
+            if self.words.contains(w) {
+                hits.push(LintHit {
+                    rule: self.rule_name.into(),
+                    severity: LintSeverity::Reject,
+                    detail: format!("{} token {w}", self.rule_name),
+                });
+            }
+        }
+        let c = compact(&candidate.name);
+        if hits.is_empty() && self.words.contains(&c) {
+            hits.push(LintHit {
+                rule: self.rule_name.into(),
+                severity: LintSeverity::Reject,
+                detail: format!("{} token {c}", self.rule_name),
+            });
+        }
+        hits
     }
 }
 
@@ -520,7 +595,18 @@ mod tests {
         assert!(e.first_reject(&cand("INFINITE JUSTICE")).is_some());
         assert!(e.first_reject(&cand("GRANITE GRANITE")).is_some());
         assert!(e.first_reject(&cand("COVERT ORBIT")).is_some());
-        assert!(e.first_reject(&cand("EAGLE MESA")).is_some()); // JANAP sample
+    }
+
+    #[test]
+    fn janap_table_rejects_words() {
+        let table = crate::janap::JanapTable::parse(
+            "word\tfirst_digraph\tsecond_digraph\nHAWK\tE3\t\nRAVEN\t\tGK\n",
+        )
+        .unwrap();
+        let e = LintEngine::with_janap(&table);
+        assert!(e.first_reject(&cand("HAWK MESA")).is_some());
+        assert!(e.first_reject(&cand("GRANITE RAVEN")).is_some());
+        assert!(e.first_reject(&cand("GRANITE SPIRE")).is_none());
     }
 
     #[test]

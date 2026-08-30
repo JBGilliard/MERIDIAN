@@ -1,0 +1,80 @@
+# Historical CIA cryptonyms and U.S. Secret Service codenames.
+# Source: wikipedia dump in this repo (List of CIA cryptonyms; Secret Service
+# codenames). One token per line; blank/# lines ignored by the pool parser.
+# Rejecting these prevents minting a name that already names a real, notable
+# program or protectee — same intent as MeaningLeakRule, separate provenance.
+# Multi-word codenames (e.g. "BLACK HAWK", "FLAG DAY") are out of scope here;
+# BannedPairRule covers pair-shaped collisions.
+#
+# CIA cryptonyms / operations
+ARTICHOKE
+AZORIAN
+BLACKSHIELD
+BLUEBIRD
+CHARITY
+CHERRY
+CORONA
+FUBELT
+GUSTO
+IDIOM
+JENNIFER
+LIONIZER
+MKDELTA
+MKNAOMI
+MKOFTEN
+MKSEARCH
+MKULTRA
+MOCKINGBIRD
+MONGOOSE
+NAOMI
+OXCART
+PAPERCLIP
+PHOENIX
+PYREX
+QJWIN
+RAINBOW
+ROADHOUSE
+RYBAT
+SGUAT
+SHELLAC
+SHERWOOD
+STARGATE
+SYNCARP
+THERMOS
+TROPIC
+ULTRA
+VALUABLE
+WASHTUB
+WEMCA
+ZAPATA
+# Secret Service protectee / location codenames
+ACROBAT
+BLUEBERRY
+BUCKEYE
+CACTUS
+CASTLE
+CELTIC
+COBWEB
+COWPUNCHER
+EAGLE
+FATBOY
+FIREBIRD
+FOOTPRINT
+HALFBACK
+HALO
+HERCULES
+KITTYHAWK
+LANCER
+PACEMAKER
+PATRIOT
+POTOMAC
+RAWHIDE
+REDFERN
+RENEGADE
+SEARCHLIGHT
+SNAPSHOT
+STAGECOACH
+STARLIGHT
+UNICORN
+VOLCANO
+VOLUNTEER

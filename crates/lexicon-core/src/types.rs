@@ -3,7 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 
 /// Bundled pool set identifier. Bump when word lists change incompatibly.
-pub const POOL_ID: &str = "lexicon-pools-v2";
+pub const POOL_ID: &str = "lexicon-pools-v4";
 #[doc(hidden)]
 pub const POOL_ID_V1: &str = POOL_ID;
 
