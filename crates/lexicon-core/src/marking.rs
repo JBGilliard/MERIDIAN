@@ -3,6 +3,12 @@
 //! container stays unclassified; the marking is name metadata.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::OnceLock;
+
+// Same files the accreditor replaces; rebuild picks them up.
+const SCI_REGISTER_JSON: &str = include_str!("../../lexicon-pools/data/sci_register.json");
+const ISO3166_ALPHA3: &str = include_str!("../../lexicon-pools/data/iso3166_alpha3.txt");
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
@@ -50,6 +56,7 @@ pub enum Caveat {
     Fisa,
     Rsen,
     RelTo { countries: Vec<String> },
+    Hvsaco,
     Other { token: String },
 }
 
@@ -61,12 +68,13 @@ impl Caveat {
             Self::Fisa => 3,
             Self::Rsen => 4,
             Self::RelTo { .. } => 5,
+            Self::Hvsaco => 6,
             Self::Other { .. } => 255,
         }
     }
     fn detail(&self) -> String {
         match self {
-            Self::Noforn | Self::Orcon | Self::Fisa | Self::Rsen => String::new(),
+            Self::Noforn | Self::Orcon | Self::Fisa | Self::Rsen | Self::Hvsaco => String::new(),
             Self::RelTo { countries } => countries.join(","),
             Self::Other { token } => token.clone(),
         }
@@ -78,6 +86,7 @@ impl Caveat {
             Self::Fisa => "FISA".into(),
             Self::Rsen => "RSEN".into(),
             Self::RelTo { countries } => format!("REL TO {}", countries.join(",")),
+            Self::Hvsaco => "HVSACO".into(),
             Self::Other { token } => token.clone(),
         }
     }
@@ -88,6 +97,7 @@ impl Caveat {
             "ORCON" => Some(Self::Orcon),
             "FISA" => Some(Self::Fisa),
             "RSEN" => Some(Self::Rsen),
+            "HVSACO" => Some(Self::Hvsaco),
             s if s.starts_with("REL TO ") => Some(Self::RelTo {
                 countries: s["REL TO ".len()..]
                     .split(',')
@@ -95,9 +105,18 @@ impl Caveat {
                     .filter(|c| !c.is_empty())
                     .collect(),
             }),
+            s if is_other_caveat(s) => Some(Self::Other { token: s.into() }),
             _ => None,
         }
     }
+}
+
+/// Dissemination-control shaped, not a compartment (`SCI/…`).
+fn is_other_caveat(s: &str) -> bool {
+    if s.is_empty() || s.contains('/') || CompartmentKind::parse(s).is_some() {
+        return false;
+    }
+    s.bytes().all(|b| b.is_ascii_alphabetic() || b == b'-')
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -144,6 +163,73 @@ impl CompartmentKind {
 pub struct Compartment {
     pub kind: CompartmentKind,
     pub designator: String,
+}
+
+/// Bundled SCI/SAP designator allow-list. Sample until the accreditor ships the real one.
+#[derive(Debug, Clone)]
+pub struct SciRegister {
+    sci: HashSet<String>,
+    sap: HashSet<String>,
+}
+
+impl SciRegister {
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        #[derive(Deserialize)]
+        struct File {
+            #[serde(default)]
+            sci: Vec<String>,
+            #[serde(default)]
+            sap: Vec<String>,
+        }
+        let f: File = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        Ok(Self {
+            sci: f.sci.into_iter().map(|s| s.to_ascii_uppercase()).collect(),
+            sap: f.sap.into_iter().map(|s| s.to_ascii_uppercase()).collect(),
+        })
+    }
+
+    pub fn bundled() -> &'static Self {
+        static R: OnceLock<SciRegister> = OnceLock::new();
+        R.get_or_init(|| Self::from_json(SCI_REGISTER_JSON).expect("sci_register.json"))
+    }
+
+    pub fn allows(&self, kind: &CompartmentKind, designator: &str) -> bool {
+        if designator.is_empty() {
+            return true;
+        }
+        match kind {
+            CompartmentKind::Sci => self.sci.contains(designator),
+            CompartmentKind::Sap => self.sap.contains(designator),
+            _ => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CountryRegister {
+    codes: HashSet<String>,
+}
+
+impl CountryRegister {
+    pub fn from_text(text: &str) -> Self {
+        Self {
+            codes: text
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| l.to_ascii_uppercase())
+                .collect(),
+        }
+    }
+
+    pub fn bundled() -> &'static Self {
+        static R: OnceLock<CountryRegister> = OnceLock::new();
+        R.get_or_init(|| Self::from_text(ISO3166_ALPHA3))
+    }
+
+    pub fn contains(&self, code: &str) -> bool {
+        self.codes.contains(code)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -209,6 +295,81 @@ impl Marking {
             .into_iter()
             .fold(Marking::default(), |acc, m| acc.max(&m))
     }
+
+    /// Non-standard caveats (Other). Never silent — caller must surface these.
+    pub fn warnings(&self) -> Vec<String> {
+        self.caveats
+            .iter()
+            .filter_map(|c| match c {
+                Caveat::Other { token } => Some(format!(
+                    "non-standard caveat '{token}'; not a typed CAPCO control"
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    pub fn parse_with(
+        s: &str,
+        sci: &SciRegister,
+        countries: &CountryRegister,
+    ) -> Result<Self, String> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Ok(Self::default());
+        }
+        let segs: Vec<&str> = s.split("//").collect();
+        let level = Level::parse(segs[0])
+            .ok_or_else(|| format!("unknown classification level '{}'", segs[0]))?;
+        let mut caveats = Vec::new();
+        let mut compartments = Vec::new();
+        for seg in &segs[1..] {
+            if let Some(c) = Caveat::parse(seg) {
+                caveats.push(c);
+                continue;
+            }
+            if let Some((kind, dgs)) = parse_compartment(seg) {
+                for dg in dgs {
+                    compartments.push(Compartment {
+                        kind: kind.clone(),
+                        designator: dg,
+                    });
+                }
+                continue;
+            }
+            return Err(format!(
+                "unknown CAPCO token '{seg}'; supported: NOFORN, ORCON, FISA, RSEN, HVSACO, REL TO <ISO 3166-1 alpha-3>, SCI/<dg>, SAP/<dg>, RD-FRD, CNWDI"
+            ));
+        }
+        for c in &compartments {
+            if !sci.allows(&c.kind, &c.designator) {
+                let kind = c.kind.display();
+                return Err(format!(
+                    "unknown {kind} designator '{}'; not in sci_register",
+                    c.designator
+                ));
+            }
+        }
+        for c in &caveats {
+            if let Caveat::RelTo { countries: list } = c {
+                if list.is_empty() {
+                    return Err("REL TO requires at least one ISO 3166-1 alpha-3 country".into());
+                }
+                for code in list {
+                    if !countries.contains(code) {
+                        return Err(format!(
+                            "unknown REL TO country '{code}'; not ISO 3166-1 alpha-3 or a recognized collective"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(Marking {
+            level,
+            caveats,
+            compartments,
+        })
+    }
 }
 
 impl std::fmt::Display for Marking {
@@ -247,38 +408,7 @@ impl std::str::FromStr for Marking {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-        if s.is_empty() {
-            return Ok(Self::default());
-        }
-        let segs: Vec<&str> = s.split("//").collect();
-        let level = Level::parse(segs[0])
-            .ok_or_else(|| format!("unknown classification level '{}'", segs[0]))?;
-        let mut caveats = Vec::new();
-        let mut compartments = Vec::new();
-        for seg in &segs[1..] {
-            if let Some(c) = Caveat::parse(seg) {
-                caveats.push(c);
-                continue;
-            }
-            if let Some((kind, dgs)) = parse_compartment(seg) {
-                for dg in dgs {
-                    compartments.push(Compartment {
-                        kind: kind.clone(),
-                        designator: dg,
-                    });
-                }
-                continue;
-            }
-            return Err(format!(
-                "unknown CAPCO token '{seg}'; supported: NOFORN, ORCON, FISA, RSEN, REL TO <list>, SCI/<dg>, SAP/<dg>, RD-FRD, CNWDI"
-            ));
-        }
-        Ok(Marking {
-            level,
-            caveats,
-            compartments,
-        })
+        Self::parse_with(s, SciRegister::bundled(), CountryRegister::bundled())
     }
 }
 
@@ -331,6 +461,22 @@ mod tests {
             }]
         );
         assert_eq!(m.to_string(), "S//REL TO USA,GBR");
+        let fvey: Marking = "S//REL TO FVEY".parse().unwrap();
+        assert_eq!(
+            fvey.caveats,
+            vec![Caveat::RelTo {
+                countries: vec!["FVEY".into()]
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_hvsaco() {
+        let m: Marking = "TS//HVSACO//SCI/TK".parse().unwrap();
+        assert_eq!(m.caveats, vec![Caveat::Hvsaco]);
+        assert_eq!(m.to_string(), "TS//HVSACO//SCI/TK");
+        let bytes = m.canonical_bytes();
+        assert_eq!(bytes[2], 6);
     }
 
     #[test]
@@ -354,9 +500,70 @@ mod tests {
     }
 
     #[test]
-    fn rejects_banana() {
+    fn rejects_unknown_level() {
         assert!("banana".parse::<Marking>().is_err());
-        assert!("TS//BANANA".parse::<Marking>().is_err());
+    }
+
+    #[test]
+    fn other_caveat_warns() {
+        let m: Marking = "TS//BANANA".parse().unwrap();
+        assert_eq!(
+            m.caveats,
+            vec![Caveat::Other {
+                token: "BANANA".into()
+            }]
+        );
+        assert!(!m.warnings().is_empty());
+    }
+
+    #[test]
+    fn rejects_unknown_sci_designator() {
+        let err = "TS//SCI/ZZZZ".parse::<Marking>().unwrap_err();
+        assert!(err.contains("ZZZZ"), "{err}");
+        assert!("TS//SCI/TK,ZZZZ".parse::<Marking>().is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_sap_designator() {
+        assert!("TS//SAP/ZZZZ".parse::<Marking>().is_err());
+        let m: Marking = "TS//SAP/BYEMAN".parse().unwrap();
+        assert_eq!(
+            m.compartments,
+            vec![Compartment {
+                kind: CompartmentKind::Sap,
+                designator: "BYEMAN".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_rel_to_country() {
+        assert!("S//REL TO ZZZ".parse::<Marking>().is_err());
+        assert!("S//REL TO USA,ZZZ".parse::<Marking>().is_err());
+        assert!("S//REL TO ".parse::<Marking>().is_err());
+    }
+
+    #[test]
+    fn parse_with_threads_registers() {
+        let sci = SciRegister::from_json(r#"{"sci":["FOO"],"sap":[]}"#).unwrap();
+        let countries = CountryRegister::from_text("USA\n");
+        assert!(Marking::parse_with("TS//SCI/FOO", &sci, &countries).is_ok());
+        assert!(Marking::parse_with("TS//SCI/TK", &sci, &countries).is_err());
+        assert!(Marking::parse_with("S//REL TO USA", &sci, &countries).is_ok());
+        assert!(Marking::parse_with("S//REL TO GBR", &sci, &countries).is_err());
+    }
+
+    #[test]
+    fn bundled_registers_cover_samples() {
+        let sci = SciRegister::bundled();
+        assert!(sci.allows(&CompartmentKind::Sci, "TK"));
+        assert!(sci.allows(&CompartmentKind::Sci, "HCS"));
+        assert!(!sci.allows(&CompartmentKind::Sci, "ZZZZ"));
+        let c = CountryRegister::bundled();
+        for code in ["USA", "GBR", "CAN", "AUS", "NZL", "FVEY"] {
+            assert!(c.contains(code), "{code}");
+        }
+        assert!(!c.contains("ZZZ"));
     }
 
     #[test]

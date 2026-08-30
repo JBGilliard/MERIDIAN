@@ -35,7 +35,7 @@ Every issued name carries a CAPCO marking. The marking is a typed struct, not a 
 lexicon --classification "TS//NOFORN//SCI/TK" mint --type codeword --agency DIA
 ```
 
-The parser accepts `U`, `CUI`, `C`, `S`, `TS`, the caveats `NOFORN`, `ORCON`, `FISA`, `RSEN`, `REL TO <list>`, and the compartments `SCI/<dg>`, `SAP/<dg>`, `RD-FRD`, `CNWDI`. Unknown tokens are rejected at the CLI.
+The parser accepts `U`, `CUI`, `C`, `S`, `TS`, the caveats `NOFORN`, `ORCON`, `FISA`, `RSEN`, `HVSACO`, `REL TO <list>`, and the compartments `SCI/<dg>`, `SAP/<dg>`, `RD-FRD`, `CNWDI`. SCI/SAP designators must be in the bundled register (`crates/lexicon-pools/data/sci_register.json`, a sample — the accreditor ships the real one). REL TO accepts ISO 3166-1 alpha-3 and the FVEY collective. Unknown SCI/SAP designators and country codes are rejected. A non-standard caveat is kept as Other and the CLI warns; it is never silent.
 
 The ledger container stays unclassified. The marking is metadata about the name, not classification of the ledger. This keeps the ledger auditable by anyone, with no SCIF requirement to run the binary.
 
@@ -142,7 +142,7 @@ Meridian-lexicon is a reference implementation, not a deployed system. These ite
 
 - federation across authorities (pre-commit, quorum, loser-recall);
 - FIPS 140-3 module boundary;
-- a live authoritative reject feed (the bundled lists are samples);
+- a live authoritative reject feed or SCI/SAP register (the bundled lists are samples);
 - post-quantum transport (ML-KEM, FIPS 203);
 - HSM-backed key storage (the VRF takes the raw seed; an HSM cannot drive it — see the split-authority design in [RFC-0001 §3.1](docs/RFC-0001.md)).
 

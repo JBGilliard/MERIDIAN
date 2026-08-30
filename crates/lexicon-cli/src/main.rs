@@ -401,6 +401,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map_err(|e| format!("bad classification: {e}"))?,
                 None => lexicon_core::marking::Marking::default(),
             };
+            for w in marking.warnings() {
+                eprintln!("warning: {w}");
+            }
             let attribution = lexicon_core::Attribution {
                 user: cli
                     .user
