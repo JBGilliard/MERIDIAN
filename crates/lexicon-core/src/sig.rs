@@ -136,7 +136,7 @@ impl MlDsaSigner {
     }
 
     pub fn public_key_bytes(&self) -> Vec<u8> {
-        use ml_dsa::{Keypair, KeyExport};
+        use ml_dsa::{KeyExport, Keypair};
         self.sk.verifying_key().to_bytes().to_vec()
     }
 }
@@ -148,7 +148,7 @@ impl Signer for MlDsaSigner {
     }
 
     fn sign(&self, msg: &[u8]) -> Signature {
-        use ml_dsa::{Signer as _, SignatureEncoding};
+        use ml_dsa::{SignatureEncoding, Signer as _};
         let sig: ml_dsa::Signature<ml_dsa::MlDsa65> = self.sk.sign(msg);
         Signature::new(SigAlg::MlDsa65, sig.to_bytes().to_vec())
     }
@@ -166,7 +166,9 @@ pub fn verify(pks: &[&[u8]], msg: &[u8], sig: &Signature) -> Result<()> {
     }
     let mut used = vec![false; pks.len()];
     for part in &sig.parts {
-        // Build/config error, not a bad signature: surface distinctly.
+        // Without the `pq` feature, ML-DSA is a build/config error
+        // (the OSS binary can't verify it), not a bad signature.
+        #[cfg(not(feature = "pq"))]
         if part.alg == SigAlg::MlDsa65 {
             return Err(Error::UnsupportedAlg(part.alg.as_str().into()));
         }
@@ -213,9 +215,7 @@ fn verify_mldsa(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
         .map_err(|_| Error::Key(format!("ml-dsa-65 pk must be {PK_LEN} bytes")))?;
     let enc_pk: ml_dsa::EncodedVerifyingKey<MlDsa65> = pk_arr.into();
     let vk = ml_dsa::VerifyingKey::<MlDsa65>::decode(&enc_pk);
-    let sig_arr: [u8; SIG_LEN] = sig
-        .try_into()
-        .map_err(|_| Error::BadSignature)?;
+    let sig_arr: [u8; SIG_LEN] = sig.try_into().map_err(|_| Error::BadSignature)?;
     let enc_sig: ml_dsa::EncodedSignature<MlDsa65> = sig_arr.into();
     let s = ml_dsa::Signature::<MlDsa65>::decode(&enc_sig).ok_or(Error::BadSignature)?;
     vk.verify(msg, &s).map_err(|_| Error::BadSignature)
@@ -223,7 +223,7 @@ fn verify_mldsa(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
 
 #[cfg(not(feature = "pq"))]
 fn verify_mldsa(_pk: &[u8], _msg: &[u8], _sig: &[u8]) -> Result<()> {
-    Err(Error::UnsupportedAlg("ml-dsa-65"))
+    Err(Error::UnsupportedAlg("ml-dsa-65".into()))
 }
 
 #[cfg(test)]
@@ -318,6 +318,7 @@ mod tests {
         assert!(verify(&[&pk_a, &pk_a], b"msg", &sig).is_err());
     }
 
+    #[cfg(not(feature = "pq"))]
     #[test]
     fn ml_dsa_unsupported_is_clear() {
         let sig = Signature::new(SigAlg::MlDsa65, vec![0u8; 3300]);
@@ -331,8 +332,9 @@ mod tests {
         let signer = MlDsaSigner::generate();
         let pk = signer.public_key_bytes();
         let sig = signer.sign(b"msg");
-        assert_eq!(sig.alg, SigAlg::MlDsa65);
-        assert!(verify(&[&pk], b"msg", &sig).is_ok());
+        assert_eq!(sig.parts[0].alg, SigAlg::MlDsa65);
+        let r = verify(&[&pk], b"msg", &sig);
+        assert!(r.is_ok());
         assert!(verify(&[&pk], b"tampered", &sig).is_err());
     }
 }

@@ -18,6 +18,7 @@ pub struct MintRequest {
     pub digraph: Option<String>,
     /// Classification marking bound to the issued name (signed + hashed).
     pub marking: crate::marking::Marking,
+    pub attribution: crate::attribition::Attribution,
 }
 
 impl MintRequest {
@@ -28,6 +29,7 @@ impl MintRequest {
             max_attempts: 64,
             digraph: None,
             marking: crate::marking::Marking::default(),
+            attribution: crate::attribition::Attribution::default(),
         }
     }
 }
@@ -133,7 +135,7 @@ impl Minter<'_> {
                 continue;
             }
 
-            let event = Event::new(EventKind::Issued {
+            let mut event = Event::new(EventKind::Issued {
                 name: name.clone(),
                 name_type: req.name_type,
                 authority_id: agency.clone(),
@@ -146,6 +148,7 @@ impl Minter<'_> {
                 indices: indices.clone(),
                 marking: req.marking.clone(),
             });
+            event.attribution = req.attribution.clone();
             let event_hash = event.hash();
             let ledger_seq = self.ledger.append(event, self.authority)?;
             let inclusion = self.ledger.inclusion_proof(ledger_seq)?;
@@ -368,6 +371,7 @@ mod tests {
                 max_attempts: 32,
                 digraph: Some("AE".into()),
                 marking: crate::marking::Marking::default(),
+                attribution: crate::attribition::Attribution::default(),
             })
             .unwrap();
         assert!(c.name.starts_with("AE"), "{}", c.name);

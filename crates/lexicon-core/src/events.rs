@@ -135,6 +135,8 @@ impl EventKind {
 pub struct Event {
     pub kind: EventKind,
     pub created_at: String,
+    #[serde(default)]
+    pub attribution: crate::attribition::Attribution,
 }
 
 impl Event {
@@ -142,6 +144,7 @@ impl Event {
         Self {
             kind,
             created_at: now_rfc3339(),
+            attribution: crate::attribition::Attribution::default(),
         }
     }
 
@@ -151,6 +154,7 @@ impl Event {
         buf.extend_from_slice(b"MERIDIAN-EVENT-v2\0");
         buf.push(self.kind.tag());
         put_str(&mut buf, &self.created_at);
+        buf.extend(&self.attribution.canonical_bytes());
         match &self.kind {
             EventKind::Issued {
                 name,
@@ -264,6 +268,7 @@ mod tests {
                 authority_id: "DIA".into(),
             },
             created_at: "2026-01-01T00:00:00Z".into(),
+            attribution: crate::attribition::Attribution::default(),
         };
         assert_eq!(e.hash(), e.hash());
         assert_eq!(e.issued_name().as_deref(), Some("GRANITE SPIRE"));
@@ -280,6 +285,7 @@ mod tests {
                 new_alg: SigAlg::Ed25519,
             },
             created_at: "2026-01-01T00:00:00Z".into(),
+            attribution: crate::attribition::Attribution::default(),
         };
         // The algorithm tag is bound into canonical bytes, so a rotation to
         // a different algorithm produces a different, authenticated event.
@@ -293,5 +299,42 @@ mod tests {
             EventKind::KeyRotated { new_alg, .. } => assert_eq!(new_alg, SigAlg::Ed25519),
             _ => panic!("wrong kind"),
         }
+    }
+
+    #[test]
+    fn attribution_is_bound_into_hash() {
+        use crate::attribition::Attribution;
+        let base = EventKind::Retired {
+            name: "granite spire".into(),
+            reason: "done".into(),
+            authority_id: "DIA".into(),
+        };
+        let a = Event {
+            kind: base.clone(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            attribution: Attribution {
+                user: "jdoe".into(),
+                host: "ws001".into(),
+                ip: None,
+                hwid: None,
+            },
+        };
+        let b = Event {
+            kind: base,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            attribution: Attribution {
+                user: "asmith".into(),
+                host: "ws002".into(),
+                ip: None,
+                hwid: None,
+            },
+        };
+        // Same event, different user/host -> different canonical -> different hash.
+        assert_ne!(a.hash(), b.hash());
+        // The user string is literally in canonical (bound), not just the hash.
+        let ca = a.canonical_bytes();
+        let cb = b.canonical_bytes();
+        assert!(ca.windows(b"jdoe".len()).any(|w| w == b"jdoe"));
+        assert!(cb.windows(b"asmith".len()).any(|w| w == b"asmith"));
     }
 }

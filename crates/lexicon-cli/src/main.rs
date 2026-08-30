@@ -34,6 +34,18 @@ struct Cli {
     /// Classification banner baked into export/mint artifacts (e.g. "CUI", "SECRET//NOFORN").
     #[arg(long, global = true)]
     classification: Option<String>,
+    /// User who ran the command (bound into the event). Defaults to $USER.
+    #[arg(long, global = true)]
+    user: Option<String>,
+    /// Host the command ran on (bound into the event). Defaults to hostname.
+    #[arg(long, global = true)]
+    host: Option<String>,
+    /// Operator IP (bound into the event). Air-gapped hosts have none.
+    #[arg(long, global = true)]
+    ip: Option<String>,
+    /// Hardware id of the host (machine UUID / MAC / serial).
+    #[arg(long, global = true)]
+    hwid: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -389,12 +401,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map_err(|e| format!("bad classification: {e}"))?,
                 None => lexicon_core::marking::Marking::default(),
             };
+            let attribution = lexicon_core::Attribution {
+                user: cli
+                    .user
+                    .clone()
+                    .or_else(|| std::env::var("LEXICON_USER").ok())
+                    .or_else(|| std::env::var("USER").ok())
+                    .or_else(|| whoami())
+                    .ok_or_else(|| "no user; pass --user or set LEXICON_USER".to_string())?,
+                host: cli
+                    .host
+                    .clone()
+                    .or_else(|| hostname())
+                    .ok_or_else(|| "no host; pass --host".to_string())?,
+                ip: cli.ip.clone().or_else(detect_ip),
+                hwid: cli.hwid.clone().or_else(detect_hwid),
+            };
             let minted = minter.mint(MintRequest {
                 name_type: r#type.into(),
                 pool_id: pools.id.clone(),
                 max_attempts,
                 digraph,
                 marking,
+                attribution,
             })?;
             if ui.is_json() {
                 let mut v = serde_json::to_value(&minted)?;
@@ -933,6 +962,50 @@ fn load_auth(data: &Path, agency: &str) -> Result<Authority, Error> {
 }
 fn open_ledger(data: &Path) -> Result<Ledger, Error> {
     Ledger::open(&data.join("ledger.sqlite"))
+}
+
+fn hostname() -> Option<String> {
+    std::process::Command::new("hostname")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+}
+
+fn whoami() -> Option<String> {
+    std::process::Command::new("whoami")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+}
+
+// Primary outbound IP via the UDP-socket trick: connect a UDP socket to
+// a dummy addr and read the local addr. No packet is sent.
+// Returns None on air-gapped hosts with no route.
+fn detect_ip() -> Option<String> {
+    use std::net::UdpSocket;
+    UdpSocket::bind("0.0.0.0:0:0").ok().and_then(|s| {
+        s.connect("8.8.8.8.8:80").ok()?;
+        s.local_addr().ok().map(|a| a.ip().to_string())
+    })
+}
+
+// Best-effort hardware id: /etc/machine-id (Linux),
+// IOPlatformUUID (mac), else hostname.
+fn detect_hwid() -> Option<String> {
+    std::fs::read_to_string("/etc/machine-id")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .or_else(|| {
+            std::process::Command::new("ioreg")
+                .args(["-d2", "-c", "IOPlatformUUID"])
+                .output()
+                .ok()
+                .and_then(|o| String::from_utf8(o.stdout).ok())
+                .map(|s| s.trim().to_string())
+        })
+        .or_else(|| hostname())
 }
 
 fn sample(words: &[String]) -> String {

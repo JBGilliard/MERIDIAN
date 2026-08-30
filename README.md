@@ -115,6 +115,8 @@ Event signatures are Ed25519. A signature is a list of parts, not one part. One 
 
 The signature algorithm is a field on the key, not on the message. A future move to ML-DSA (FIPS 204) is one `key_rotated` event that names the new algorithm. The ledger format does not change.
 
+ML-DSA-65 is implemented behind the `pq` feature (`cargo build --features pq`). The default build stays Ed25519-only; with `pq`, `SigAlg::MlDsa65` signs and verifies for real. A ledger carrying ML-DSA signatures reads (canonical + Merkle) in either build; only the `pq` build verifies the signatures.
+
 The VRF is separate from event signatures. No post-quantum VRF standard exists yet. The VRF stays ECVRF-ed25519-TAI until one does.
 
 ## Steward commands
