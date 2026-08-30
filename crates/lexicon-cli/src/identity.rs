@@ -1,11 +1,15 @@
 //! OS-session user claim. Not an attestation — PIV/CAC is the HSM profile.
 //!
-//! Production builds never honor LEXICON_USER / LEXICON_HOST. Debug builds
-//! do only when `--allow-env-identity` is set (test harnesses).
+//! Collection is off unless `collect` is set (policy.allow_attribution after
+//! argv tighten). Production builds never honor LEXICON_USER / LEXICON_HOST.
+//! Debug builds do only when `--allow-env-identity` is set (test harnesses).
 
 use lexicon_core::Attribution;
 
-pub fn session_attribution(allow_env: bool) -> Result<Attribution, String> {
+pub fn session_attribution(collect: bool, allow_env: bool) -> Result<Attribution, String> {
+    if !collect {
+        return Ok(Attribution::default());
+    }
     let user = pick_field(allow_env, env_if(allow_env, "LEXICON_USER"), whoami())
         .ok_or_else(|| "cannot derive user from OS session".to_string())?;
     let host = pick_field(allow_env, env_if(allow_env, "LEXICON_HOST"), hostname())
@@ -122,9 +126,18 @@ mod tests {
 
     #[test]
     fn os_session_has_user_and_host() {
-        let a = session_attribution(false).expect("whoami/hostname");
+        let a = session_attribution(true, false).expect("whoami/hostname");
         assert!(!a.user.is_empty());
         assert!(!a.host.is_empty());
         assert!(a.ip.is_none());
+    }
+
+    #[test]
+    fn no_collect_is_empty_and_ignores_env() {
+        let a = session_attribution(false, true).expect("default");
+        assert!(a.user.is_empty());
+        assert!(a.host.is_empty());
+        assert!(a.ip.is_none());
+        assert!(a.hwid.is_none());
     }
 }

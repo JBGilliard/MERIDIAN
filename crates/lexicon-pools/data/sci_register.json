@@ -1,5 +1,6 @@
 {
   "sample": true,
+  "not_authoritative": true,
   "_comment": "SAMPLE register. Not authoritative. Accreditor replaces sci/sap with the real designator lists before any classified deployment.",
   "sci": ["TK", "HCS", "SI", "G", "KDK"],
   "sap": ["BYEMAN", "QSV"]

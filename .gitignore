@@ -8,3 +8,6 @@
 *.sk
 .DS_Store
 /data
+/vendor
+/dist
+.cargo/config.toml

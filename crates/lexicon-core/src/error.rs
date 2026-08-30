@@ -81,4 +81,29 @@ pub enum Error {
 
     #[error("crypto boundary: {0}")]
     CryptoBoundary(String),
+
+    #[error("bindings store is closed")]
+    BindingsClosed,
+
+    #[error("policy violation: {0}")]
+    PolicyViolation(String),
+
+    #[error("--data-dir is required (cwd default .meridian is refused)")]
+    ImplicitDataDir,
+
+    #[error("legacy combined ledger.sqlite is refused; start clean")]
+    LegacyLedger,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_variants_display() {
+        assert!(Error::BindingsClosed.to_string().contains("closed"));
+        assert!(Error::LegacyLedger.to_string().contains("legacy"));
+        assert!(Error::ImplicitDataDir.to_string().contains("--data-dir"));
+        assert!(Error::PolicyViolation("x".into()).to_string().contains("x"));
+    }
 }

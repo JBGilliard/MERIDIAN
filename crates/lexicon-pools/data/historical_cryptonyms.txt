@@ -1,10 +1,11 @@
-# Historical CIA cryptonyms and U.S. Secret Service codenames.
-# Source: wikipedia dump in this repo (List of CIA cryptonyms; Secret Service
-# codenames). One token per line; blank/# lines ignored by the pool parser.
-# Rejecting these prevents minting a name that already names a real, notable
-# program or protectee — same intent as MeaningLeakRule, separate provenance.
-# Multi-word codenames (e.g. "BLACK HAWK", "FLAG DAY") are out of scope here;
-# BannedPairRule covers pair-shaped collisions.
+# Declassified/public-source reject list (Wikipedia-derived). Not a live inventory
+# and not a system of record.
+# Historical CIA cryptonyms and U.S. Secret Service codenames from public sources
+# in this repo (List of CIA cryptonyms; Secret Service codenames). One token per
+# line; blank/# lines ignored by the pool parser. Rejecting these prevents minting
+# a name that already names a real, notable program or protectee — same intent as
+# MeaningLeakRule, separate provenance. Multi-word codenames (e.g. "BLACK HAWK",
+# "FLAG DAY") are out of scope here; BannedPairRule covers pair-shaped collisions.
 #
 # CIA cryptonyms / operations
 ARTICHOKE

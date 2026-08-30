@@ -1,6 +1,10 @@
 # MERIDIAN
 
-MERIDIAN is an open-source name registry for the U.S. intelligence community. The first runnable part is **meridian-lexicon**. Meridian-lexicon is the successor to NICKA.
+**MERIDIAN-lexicon** is an open-source local naming registry. It mints un-guessable names with a verifiable random function (VRF). It verifies names against the ledger and word pools. It records each mint, retirement, and revocation in an append-only SQLite ledger with a Merkle chain.
+
+A program office runs its own instance. It supplies authority keys, SCI/SAP registers, and accreditation under RMF. The tool ships as government-off-the-shelf (GOTS) reference software. Official IC name assignment stays with NICKA.
+
+The repository and bundled pool data are UNCLASSIFIED. The registers in the repo are samples for development and test. Production hosts use accreditor-approved registers and store classified bindings per site policy. See [docs/HIGH-SIDE.md](docs/HIGH-SIDE.md) for the two-chain ledger and `policy.toml`.
 
 ```
 lexicon mint --type nickname --agency DIA
@@ -29,11 +33,15 @@ A cryptonym uses a CIA digraph (`AE`, `AM`, `ZR`, `GP`, `KU`, `MK`, `LI`, `JM`, 
 
 ## Classification
 
-Every issued name carries a CAPCO marking. The marking is a typed struct, not a free-form string. The mint signs it and hashes it into the event. No person can change it after the mint.
+Every issued name carries a CAPCO marking. The marking is a typed struct. The mint signs it and hashes it into the event. No person can change it after the mint.
+
+On accredited hosts, put the marking in a file. Use `--marking-file` or `--binding-file`. Do not put classified strings on the command line.
 
 ```
-lexicon --classification "TS//TK//SAR-QSV//NOFORN" mint --type codeword --agency DIA
+lexicon --marking-file marking.json mint --type codeword --agency DIA
 ```
+
+`--classification` sets a floor marking for mint and export artifacts. It is argv-audited. The CLI prints a warning when you use it. Prefer `--marking-file` on the high side.
 
 ### CAPCO grammar
 
@@ -46,9 +54,27 @@ The banner order is fixed: `CLASSIFICATION // SCI // SAR // AEA // FGI // DISSEM
 - AEA: `RD-FRD`, `CNWDI`.
 - FGI: `FGI` or `FGI-<country>`.
 
-SCI and SAP designators must come from the bundled register (`crates/lexicon-pools/data/sci_register.json`, a sample — the accreditor ships the real one). REL TO accepts ISO 3166-1 alpha-3 codes and the FVEY collective. The parser rejects unknown designators and country codes. It keeps a non-standard caveat as Other and prints a warning; it is never silent.
+SCI and SAP designators must come from the bundled register (`crates/lexicon-pools/data/sci_register.json`). The register is a sample. The accreditor ships the real register. REL TO accepts ISO 3166-1 alpha-3 codes and the FVEY collective. The parser rejects unknown designators and country codes. It keeps a non-standard caveat as Other and prints a warning.
 
-The parser accepts legacy strings (`SCI/TK`, `SAP/QSV`) and out-of-order tokens for rows already on the ledger. It re-displays them in the new grammar. This keeps old ledgers readable.
+The parser accepts legacy strings (`SCI/TK`, `SAP/QSV`) and out-of-order tokens for rows already on the ledger. It re-displays them in the new grammar.
+
+### Marking and binding files
+
+`--marking-file` reads JSON or TOML with a `marking` field (alias: `classification`).
+
+`--binding-file` reads JSON or TOML with marking, program binding, and controls:
+
+```toml
+marking = "TS//TK//NOFORN"
+program_pid = "QSV"
+compartment_id = "HOL"
+
+[controls]
+sci = ["TK"]
+dissem = ["NOFORN"]
+```
+
+Precedence for the floor marking: binding file, then marking file, then `--classification`. Parse errors do not echo full CAPCO strings, program IDs, or compartment IDs.
 
 ### Banner and portion
 
@@ -65,9 +91,11 @@ A nickname, an exercise term, and a SAP designator stay `UNCLASSIFIED`. The mint
 
 ### Deconfliction
 
-The display name has one namespace across all markings. A CUI program and a TS//SCI program cannot mint the same display name. This is the deconfliction invariant; do not change it. The collision message shows the winner marking, so a CUI operator sees when a name is held as TS//SCI and stops.
+The display name has one namespace across all markings. A CUI program and a TS//SCI program cannot mint the same display name. The collision message shows the winner marking. A CUI operator can see when a name is held at TS//SCI.
 
-The ledger container stays unclassified. The marking is metadata about the name, not classification of the ledger. Any person can audit the ledger this way. There is no SCIF requirement to run the binary.
+### Two-chain ledger
+
+The **names** chain (`names.sqlite`) stays unclassified. It stores issued display names, types, authorities, and lifecycle events. It does not store markings or program bindings. Classified markings, program and compartment bindings, and attribution live in **bindings** (`bindings.sqlite`). The tool opens `bindings.sqlite` only when `policy.toml` allows persistence. Default OSS builds never create `bindings.sqlite`. Any person can audit the names chain without a SCIF. Bindings handling follows the adopter's accreditation boundary.
 
 ## Programs
 
@@ -82,7 +110,7 @@ Program QSV (unack, TS)
   nickname DILIGENTLY IMPRESSED  ->  U
 ```
 
-The mint derives a codeword marking from the program and the compartment at read time. It does not store the marking for a program-bound codeword. A `program_controls_changed` event re-derives every bound codeword retroactively. The program is the source of truth; the event log is the audit trail.
+The mint derives a codeword marking from the program and the compartment at read time. It does not store the marking for a program-bound codeword. A `program_controls_changed` event re-derives every bound codeword retroactively. The program is the source of truth. The event log is the audit trail.
 
 A compartment may carry a level lower than the program (e.g. TEV flight-test at S). A single-slice document takes the slice level. A multi-slice roll-up takes the maximum of the included slice levels.
 
@@ -112,11 +140,11 @@ cargo build -p lexicon-cli
 ./target/debug/lexicon pool inspect
 ```
 
-Keys and the ledger go in `.meridian/`. Use `--data-dir` to change this path.
+Keys and `names.sqlite` go in `.meridian/` by default (OSS build). Use `--data-dir` to change this path. Highside builds require an explicit `--data-dir` and a `policy.toml` in that directory. There is no cwd default.
 
 Add `--json` to any command for stable machine output (scripts, CI). The default is human-readable.
 
-Signed events bind the OS session: `whoami`, hostname, and machine-id. There is no `--user`, `--host`, `--ip`, or `--hwid`. Those strings are a claim, not a PIV/CAC attestation.
+Attribution uses OS-session identity (`whoami`, hostname, machine-id). It is off by default. Pass `--include-attribution` when policy allows it. The CLI rejects self-reported `--user`, `--host`, `--ip`, and `--hwid` flags. Those values are a session claim, not PIV/CAC attestation.
 
 The script `scripts/demo.sh` runs an end-to-end walkthrough.
 
@@ -126,10 +154,14 @@ The script `scripts/demo.sh` runs an end-to-end walkthrough.
 
 | flag | effect |
 |------|--------|
-| `--data-dir <p>` | set the keys and ledger path (default `.meridian`) |
-| `--source-dir <p>` | set the source data dir for steward edits (default `crates/lexicon-pools/data`) |
+| `--data-dir <p>` | keys + ledger path (OSS default `.meridian`; highside: required, no cwd default) |
+| `--source-dir <p>` | source data dir for steward edits (default `crates/lexicon-pools/data`) |
 | `--json` | emit stable machine output |
-| `--classification <m>` | set the floor marking for mint and export artifacts |
+| `--marking-file <path>` | classification marking from JSON or TOML (preferred on high side) |
+| `--binding-file <path>` | classified binding from JSON or TOML (marking, program, compartment, controls) |
+| `--classification <m>` | floor marking for mint/export (argv-audited; prefer `--marking-file`) |
+| `--persist-markings` | open `bindings.sqlite` and write classified bindings (policy must allow) |
+| `--include-attribution` | collect OS-session attribution on events and export (policy must allow) |
 | `--approved-mode` | refuse to run unless the FIPS 140-3 boundary is active |
 
 ### Keys
@@ -151,6 +183,7 @@ lexicon mint --type nickname --agency DIA
 lexicon mint --type cryptonym --agency CIA --digraph AE
 lexicon mint --type codeword --agency DIA --max-attempts 128
 lexicon mint --type codeword --agency USAF --program QSV --compartment HOL
+lexicon mint --type nickname --agency DIA --seed <64-hex-chars>
 ```
 
 - `--type`: set the name form.
@@ -159,8 +192,11 @@ lexicon mint --type codeword --agency USAF --program QSV --compartment HOL
 - `--max-attempts`: set how many VRF tries the mint makes before it gives up (default 64).
 - `--program`: bind the name to a SAP program. A codeword or cryptonym derives its marking from the program.
 - `--compartment`: bind the name to a compartment of `--program`.
+- `--seed`: dry run. Print candidate names. Do not open or write any SQLite file.
 
 The mint runs the VRF, the linter, and the uniqueness check, then writes the event. A nickname, an exercise term, and a SAP designator stay U. The mint refuses a higher level for these types.
+
+Use `--binding-file` instead of `--program` and `--compartment` on the high side. Argv values override the binding file when both are set.
 
 ### Verify and check
 
@@ -191,8 +227,10 @@ lexicon ledger names --marking CUI
 lexicon ledger lookup --name "GRANITE SPIRE"
 lexicon ledger history --agency DIA --type nickname --status issued --marking CUI
 lexicon ledger export --file audit.jsonl
+lexicon ledger export --file audit.jsonl --bindings
 lexicon ledger audit --public-key <pk>
 lexicon ledger audit --public-key <pk1> --public-key <pk2>
+lexicon ledger migrate
 ```
 
 | subcommand | what it does |
@@ -202,10 +240,11 @@ lexicon ledger audit --public-key <pk1> --public-key <pk2>
 | `names` | list issued names with banners; `--marking` filters to one marking (spillage guard) |
 | `lookup` | show one name: status, type, agency, marking, attribution, sequence, time |
 | `history` | list name records; filter by `--agency`, `--type`, `--status`, `--marking` |
-| `export` | write the full event log as JSON lines for offline audit; `-` means stdout |
+| `export` | write the **names** chain as JSON lines (default); `--bindings` adds a classified sidecar when policy allows; attribution redacted unless policy and `--include-attribution` allow it |
 | `audit` | verify the chain and every event signature against the supplied public key(s) |
+| `migrate` | quarantine legacy `ledger.sqlite`; start clean with the two-chain layout |
 
-`ledger audit` reports each event whose signature fails against the supplied key. A failure can mean a key rotation; the output names the seqs and tells the auditor to use the old key for those. A two-person event verifies only against both keys.
+`ledger audit` reports each event whose signature fails against the supplied key. A failure can mean a key rotation. The output names the seqs. Use the old key for those seqs. A two-person event verifies only against both keys.
 
 ### Program
 
@@ -238,9 +277,11 @@ lexicon program controls remove --program QSV --compartment SEN --sci TK
 
 `--sap-type` accepts `acknowledged`, `unacknowledged`, `waived`. A waived SAP derives `WAIVED` in the banner before other dissemination controls.
 
-`program show` prints the standing banner (program record, no slices). It does not print a roll-up of all compartments. Use `program banner --slices ...` for a roll-up.
+`program show` prints the standing banner (program record, no slices). Use `program banner --slices ...` for a roll-up.
 
-`program names` is the program-scoped lexicon view. The steward-assigned names (PID, nickname, codewords) are not in the `names` table, so `ledger names` does not show them. `program names` lists them.
+`program names` is the program-scoped lexicon view. Steward-assigned names (PID, nickname, codewords) are not in the `names` table. `ledger names` does not show them. `program names` lists them.
+
+Program create and controls commands read controls from `--binding-file` when argv control flags are empty.
 
 ### Pool
 
@@ -259,56 +300,58 @@ lexicon pool reject remove --set historical --token TICTAC
 - `pool agency`: steward commands that edit the agency allocations in the source data files.
 - `pool reject`: steward commands that edit the reject lists in the source data files.
 
-A rebuild and a `POOL_ID` bump ship a steward change into the binary. The command output says so.
+Rebuild the binary and bump `POOL_ID` to ship a steward change.
 
 Reject sets: `historical`, `military`. Agency `digraphs` are empty for non-CIA agencies. Cryptonym is a CIA convention.
 
-The `historical` set holds real loaded codenames the tool refuses to mint — `OXCART`, `HAVE BLUE`, `MKULTRA`, `CORONA`, `STARGATE`, and the rest. The system memory of IC nomenclature is encoded as what the tool will not mint. (Have Blue was the Lockheed Skunk Works stealth demonstrator at Groom Lake that led to the F-117.)
+The `historical` set holds loaded codenames the tool refuses to mint, including `OXCART`, `HAVE BLUE`, `MKULTRA`, `CORONA`, and `STARGATE`.
 
 ## Signatures
 
-Event signatures are Ed25519. A signature is a list of parts, not one part. One part is the common case; two parts enable two-person control and a future hybrid scheme. The signature blob is not part of `canonical` and the Merkle tree does not hash it, so the wire format can change without a ledger-format break.
+Event signatures are Ed25519. A signature is a list of parts, not one part. One part is the common case. Two parts enable two-person control and a future hybrid scheme. The signature blob is not part of `canonical`. The Merkle tree does not hash it. The wire format can change without a ledger-format break.
 
 The signature algorithm is a field on the key, not on the message. A future move to ML-DSA (FIPS 204) is one `key_rotated` event that names the new algorithm. The ledger format does not change.
 
-ML-DSA-65 is built behind the `pq` feature (`cargo build --features pq`). The default build stays Ed25519-only; with `pq`, `SigAlg::MlDsa65` signs and verifies for real. A ledger that carries ML-DSA signatures reads (canonical + Merkle) in either build; only the `pq` build verifies the signatures.
+ML-DSA-65 is built behind the `pq` feature (`cargo build --features pq`). The default build stays Ed25519-only. With `pq`, `SigAlg::MlDsa65` signs and verifies. A ledger that carries ML-DSA signatures reads in either build. Only the `pq` build verifies ML-DSA signatures.
 
 The VRF is separate from event signatures. No post-quantum VRF standard exists yet. The VRF stays ECVRF-ed25519-TAI (NSA-approved SC-13(2), not FIPS-validated) until one does.
 
 ### FIPS 140-3
 
-The default build uses rustcrypto (`sha2`, `ed25519-dalek`). `--features fips` routes SHA-256, Ed25519, and ML-DSA through AWS-LC (FIPS 140-3 module; cmake and go must compile). ECVRF stays on curve25519-dalek — no validated module implements it; the accreditor accepts SC-13(2) in the SSPP.
+The default build uses rustcrypto (`sha2`, `ed25519-dalek`). `--features fips` routes SHA-256, Ed25519, and ML-DSA through AWS-LC (FIPS 140-3 module; cmake and go must compile). ECVRF stays on curve25519-dalek. No validated module implements it. The accreditor accepts SC-13(2) in the SSPP.
 
 ```
 cargo build -p lexicon-cli --release --features fips
 ./target/release/lexicon --approved-mode ledger verify
 ```
 
-`--approved-mode` exits unless the FIPS module is in FIPS mode and the SHA-256 and Ed25519 known-answer tests pass. `ledger verify` prints `STATUS crypto-boundary=...` so the AO can grep it.
+`--approved-mode` exits unless the FIPS module is in FIPS mode and the SHA-256 and Ed25519 known-answer tests pass. `ledger verify` prints `STATUS crypto-boundary=...` for audit scripts.
 
-## What this is not
+## Scope
 
-Meridian-lexicon is a reference implementation, not a deployed system. These items are specified, not built:
+MERIDIAN-lexicon is a reference implementation for local minting, deconfliction, and audit. It runs on one machine or one accredited enclave.
+
+[RFC-0001](docs/RFC-0001.md) specifies additional capabilities for a future federated service:
 
 - federation across authorities (pre-commit, quorum, loser-recall);
-- a live authoritative reject feed or SCI/SAP register (the bundled lists are samples);
+- live authoritative reject and SCI/SAP registers (the bundled lists are development samples);
 - post-quantum transport (ML-KEM, FIPS 203);
-- HSM-backed key storage (`VrfSigner` / `RemoteVrfSigner` behind `--features hsm` is the seam; the proxy is unbuilt. Seed custody is the accreditor's — see [RFC-0001 §3.1](docs/RFC-0001.md));
-- PIV/CAC user binding (events carry an OS-session claim; AU-10 non-repudiation waits on the HSM profile).
+- HSM-backed key storage (`--features hsm` exposes the `VrfSigner` seam; seed custody is the adopter's responsibility — see [RFC-0001 §3.1](docs/RFC-0001.md));
+- PIV/CAC user binding (events carry an OS-session claim until an HSM profile ships).
 
 See [docs/RFC-0001.md](docs/RFC-0001.md) for the full specification.
 
-## Fuzz
+## Documentation
 
-`fuzz/` is a separate Cargo workspace. cargo-fuzz requires the nightly toolchain.
-
-```bash
-cargo install cargo-fuzz
-rustup toolchain install nightly
-cargo +nightly fuzz run mint_input
-```
-
-The target pushes arbitrary seeds through VRF prove/verify, pool indexing, and the linter. A panic is a bug.
+| Doc | Audience |
+|-----|----------|
+| [docs/DEV.md](docs/DEV.md) | Developers (build, test, fuzz) |
+| [docs/HIGH-SIDE.md](docs/HIGH-SIDE.md) | Accredited high-side deployment |
+| [docs/INTRO-PACKAGE.md](docs/INTRO-PACKAGE.md) | Intro artifact bundle for PO evaluation |
+| [docs/SCRM.md](docs/SCRM.md) | Supply chain (deny, vendor, SBOM) |
+| [docs/PROVENANCE.md](docs/PROVENANCE.md) | Build and artifact traceability |
+| [SECURITY.md](SECURITY.md) | Vulnerability reporting and threat model |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 
 ## Crates
 
@@ -320,4 +363,4 @@ The target pushes arbitrary seeds through VRF prove/verify, pool indexing, and t
 
 ## License
 
-Apache-2.0. The patent grant matters for government adoption.
+Apache-2.0.

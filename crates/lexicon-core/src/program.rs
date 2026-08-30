@@ -256,7 +256,8 @@ impl ProgramSet {
 
 /// Level from program; SCI = program.sci ++ compartment.sci (deduped);
 /// SAR = pid or pid-compid; AEA/FGI/dissem from the program.
-pub fn derive_marking(program: &Program, compartment: Option<&Compartment>) -> Marking {    let mut sci: Vec<String> = values_of(&program.controls, ControlKind::Sci);
+pub fn derive_marking(program: &Program, compartment: Option<&Compartment>) -> Marking {
+    let mut sci: Vec<String> = values_of(&program.controls, ControlKind::Sci);
     if let Some(c) = compartment {
         for v in values_of(&c.controls, ControlKind::Sci) {
             if !sci.iter().any(|s| s == &v) {
@@ -308,16 +309,12 @@ pub fn derive_marking(program: &Program, compartment: Option<&Compartment>) -> M
         .collect();
     // Waived SAPs carry WAIVED; it's a program attribute, not operator dissem.
     // Placed before other dissem controls (e.g. //WAIVED//NOFORN).
-    if program.sap_type == SapType::Waived
-        && !caveats.iter().any(|c| matches!(c, Caveat::Waived))
-    {
+    if program.sap_type == SapType::Waived && !caveats.iter().any(|c| matches!(c, Caveat::Waived)) {
         caveats.insert(0, Caveat::Waived);
     }
 
     Marking {
-        level: compartment
-            .and_then(|c| c.level)
-            .unwrap_or(program.level),
+        level: compartment.and_then(|c| c.level).unwrap_or(program.level),
         caveats,
         compartments,
     }
@@ -423,9 +420,7 @@ pub fn roll_up_marking(program: &Program, compartments: &[&Compartment]) -> Mark
         .into_iter()
         .map(dissem_caveat)
         .collect();
-    if program.sap_type == SapType::Waived
-        && !caveats.iter().any(|c| matches!(c, Caveat::Waived))
-    {
+    if program.sap_type == SapType::Waived && !caveats.iter().any(|c| matches!(c, Caveat::Waived)) {
         caveats.insert(0, Caveat::Waived);
     }
     Marking {
@@ -714,8 +709,16 @@ mod tests {
         // space-joined: SAR-QSV-HOL-PER A1 A2-SEN-TEV.
         let mut p = qsv();
         p.controls.retain(|c| c.kind != ControlKind::Sci);
-        let hol_c = Compartment { id: "HOL".into(), controls: vec![], ..hol() };
-        let per_c = Compartment { id: "PER".into(), controls: vec![], ..hol() };
+        let hol_c = Compartment {
+            id: "HOL".into(),
+            controls: vec![],
+            ..hol()
+        };
+        let per_c = Compartment {
+            id: "PER".into(),
+            controls: vec![],
+            ..hol()
+        };
         let a1 = Compartment {
             id: "A1".into(),
             parent_id: Some("PER".into()),
@@ -728,8 +731,16 @@ mod tests {
             controls: vec![],
             ..hol()
         };
-        let sen_c = Compartment { id: "SEN".into(), controls: vec![], ..hol() };
-        let tev_c = Compartment { id: "TEV".into(), controls: vec![], ..hol() };
+        let sen_c = Compartment {
+            id: "SEN".into(),
+            controls: vec![],
+            ..hol()
+        };
+        let tev_c = Compartment {
+            id: "TEV".into(),
+            controls: vec![],
+            ..hol()
+        };
         let all: Vec<&Compartment> = vec![&hol_c, &per_c, &a1, &a2, &sen_c, &tev_c];
         assert_eq!(
             render_roll_up(&p, &all, Profile::Portion),
@@ -767,10 +778,7 @@ mod tests {
             "TS//TK//SAR-QSV-SEN-TEV//NF"
         );
         // Standing: program TS, no slices.
-        assert_eq!(
-            render_roll_up(&p, &[], Profile::Portion),
-            "TS//SAR-QSV//NF"
-        );
+        assert_eq!(render_roll_up(&p, &[], Profile::Portion), "TS//SAR-QSV//NF");
     }
 
     #[test]

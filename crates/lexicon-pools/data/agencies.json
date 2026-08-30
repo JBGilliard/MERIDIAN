@@ -1,4 +1,7 @@
 {
+  "sample": true,
+  "not_authoritative": true,
+  "_comment": "SAMPLE allocation file. Agency IDs reflect public existence only. Digraphs and SAP/SCI tokens are open-record shape samples for the mint path — not live program-to-codeword facts. Accreditor replaces before classified deployment.",
   "agencies": [
     {
       "id": "CIA",
