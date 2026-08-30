@@ -114,10 +114,15 @@ enum PoolCmd {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum TypeArg {
+    #[value(alias = "NICKNAME")]
     Nickname,
+    #[value(alias = "CODEWORD", alias = "CODE-WORD")]
     Codeword,
+    #[value(alias = "CRYPTONYM")]
     Cryptonym,
+    #[value(alias = "SAP", alias = "SAP-DESIGNATOR")]
     Sap,
+    #[value(alias = "EXERCISE", alias = "EXERCISE-TERM")]
     Exercise,
 }
 
