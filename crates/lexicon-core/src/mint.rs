@@ -16,6 +16,8 @@ pub struct MintRequest {
     pub max_attempts: u32,
     /// Pin a cryptonym digraph instead of VRF-picking from the agency allocation.
     pub digraph: Option<String>,
+    /// Classification marking bound to the issued name (signed + hashed).
+    pub marking: crate::marking::Marking,
 }
 
 impl MintRequest {
@@ -25,6 +27,7 @@ impl MintRequest {
             pool_id: POOL_ID_V1.into(),
             max_attempts: 64,
             digraph: None,
+            marking: crate::marking::Marking::default(),
         }
     }
 }
@@ -44,6 +47,7 @@ pub struct MintedName {
     pub ledger_seq: u64,
     pub event_hash: String,
     pub inclusion: merkle::InclusionProof,
+    pub marking: crate::marking::Marking,
 }
 
 pub struct Minter<'a> {
@@ -111,12 +115,20 @@ impl Minter<'_> {
             }
 
             if let Some(status) = self.ledger.name_status(&name)? {
+                // Surface the winner's marking so a CUI operator colliding
+                // with a TS//SCI name sees it and stops, rather than
+                // re-rolling blind.
+                let held_marking = self
+                    .ledger
+                    .lookup(&name)?
+                    .map(|r| r.marking)
+                    .unwrap_or_default();
                 self.log_attempt(
                     &name,
                     req.name_type,
                     nonce,
                     AttemptReason::Collision,
-                    status.as_str(),
+                    &format!("{}; held as {}", status.as_str(), held_marking),
                 )?;
                 nonce += 1;
                 continue;
@@ -133,6 +145,7 @@ impl Minter<'_> {
                 vrf_proof: hex::encode(proof.as_bytes()),
                 vrf_output: hex::encode(beta.as_bytes()),
                 indices: indices.clone(),
+                marking: req.marking.clone(),
             });
             let event_hash = event.hash();
             let ledger_seq = self.ledger.append(event, self.authority)?;
@@ -152,6 +165,7 @@ impl Minter<'_> {
                 ledger_seq,
                 event_hash: hex::encode(event_hash),
                 inclusion,
+                marking: req.marking.clone(),
             });
         }
 
@@ -354,6 +368,7 @@ mod tests {
                 pool_id: POOL_ID_V1.into(),
                 max_attempts: 32,
                 digraph: Some("AE".into()),
+                marking: crate::marking::Marking::default(),
             })
             .unwrap();
         assert!(c.name.starts_with("AE"), "{}", c.name);

@@ -79,6 +79,8 @@ pub enum EventKind {
         vrf_proof: String,
         vrf_output: String,
         indices: Vec<u32>,
+        #[serde(default)]
+        marking: crate::marking::Marking,
     },
     Retired {
         name: String,
@@ -146,7 +148,7 @@ impl Event {
     /// Fixed-order length-prefixed encoding. Not JSON — JSON key order is a footgun.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.extend_from_slice(b"MERIDIAN-EVENT-v1\0");
+        buf.extend_from_slice(b"MERIDIAN-EVENT-v2\0");
         buf.push(self.kind.tag());
         put_str(&mut buf, &self.created_at);
         match &self.kind {
@@ -161,6 +163,7 @@ impl Event {
                 vrf_proof,
                 vrf_output,
                 indices,
+                marking,
             } => {
                 put_str(&mut buf, &normalize(name));
                 buf.push(name_type.tag());
@@ -175,6 +178,7 @@ impl Event {
                 for i in indices {
                     buf.extend_from_slice(&i.to_le_bytes());
                 }
+                buf.extend(&marking.canonical_bytes());
             }
             EventKind::Retired {
                 name,

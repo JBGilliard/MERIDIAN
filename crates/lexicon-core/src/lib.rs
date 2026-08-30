@@ -8,6 +8,7 @@ pub mod events;
 pub mod janap;
 pub mod ledger;
 pub mod linter;
+pub mod marking;
 pub mod merkle;
 pub mod mint;
 pub mod pool;

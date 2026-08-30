@@ -31,6 +31,9 @@ struct Cli {
     /// Emit stable JSON for scripts. Default is human-readable.
     #[arg(long, global = true)]
     json: bool,
+    /// Classification banner baked into export/mint artifacts (e.g. "CUI", "SECRET//NOFORN").
+    #[arg(long, global = true)]
+    classification: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -92,6 +95,8 @@ enum Cmd {
         agency: String,
         #[arg(long, default_value = "compromised")]
         reason: String,
+        #[arg(long, help = "second authorizer required for two-person control")]
+        co_author: Option<String>,
     },
 }
 
@@ -111,6 +116,8 @@ enum KeyCmd {
     Rotate {
         #[arg(long)]
         agency: String,
+        #[arg(long, help = "second authorizer required for two-person control")]
+        co_author: Option<String>,
         #[arg(long, default_value = "scheduled")]
         reason: String,
     },
@@ -125,7 +132,11 @@ enum LedgerCmd {
         #[arg(long)]
         agency: Option<String>,
     },
-    Names,
+    Names {
+        /// Filter to one marking (spillage guard); e.g. `--marking CUI`.
+        #[arg(long)]
+        marking: Option<String>,
+    },
     /// Look up one name: status, issuer, sequence, timestamp.
     Lookup {
         #[arg(long)]
@@ -139,6 +150,9 @@ enum LedgerCmd {
         r#type: Option<TypeArg>,
         #[arg(long)]
         status: Option<String>,
+        /// Filter to one marking (spillage guard); e.g. `--marking CUI`.
+        #[arg(long)]
+        marking: Option<String>,
     },
     /// Dump the full event log as JSON lines for offline audit.
     Export {
@@ -147,8 +161,8 @@ enum LedgerCmd {
     },
     /// Verify chain integrity + every event signature against a public key.
     Audit {
-        #[arg(long)]
-        public_key: String,
+        #[arg(long, num_args = 1.., help = "public key(s); one for single-signer events, two for two-person control")]
+        public_key: Vec<String>,
     },
 }
 
@@ -298,7 +312,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
-            KeyCmd::Rotate { agency, reason } => {
+            KeyCmd::Rotate {
+                agency,
+                co_author,
+                reason,
+            } => {
                 let agency = agency.to_ascii_uppercase();
                 let old = load_auth(&cli.data_dir, &agency)?;
                 let new = Authority::generate(&agency);
@@ -308,8 +326,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     new_pk: hex::encode(new.public_key()),
                     new_alg: new.alg(),
                 };
+                let event = Event::new(kind);
+                let canonical = event.canonical_bytes();
                 let mut led = open_ledger(&cli.data_dir)?;
-                let seq = led.append(Event::new(kind), &old)?;
+                let seq = if let Some(co) = &co_author {
+                    // Two-person control: the old authority and a second
+                    // authorizer both sign the rotation. The ledger records a
+                    // two-part signature; verification needs both public keys.
+                    let co_agency = co.to_ascii_uppercase();
+                    let co_auth = load_auth(&cli.data_dir, &co_agency)?;
+                    let sig = lexicon_core::Signature::join(vec![
+                        old.sign(&canonical),
+                        co_auth.sign(&canonical),
+                    ]);
+                    led.append_with(event, sig)?
+                } else {
+                    led.append(event, &old)?
+                };
                 // Only persist the new seed after the rotation event is durably
                 // on the ledger. A crash before this line leaves the old key
                 // active and the rotation unrecorded — recoverable.
@@ -322,12 +355,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         "new_pk": hex::encode(new.public_key()),
                         "new_alg": new.alg().as_str(),
                         "reason": reason,
+                        "two_person": co_author.is_some(),
                     }));
                 } else {
                     ui.status(true, &format!("rotated {agency} key (seq {seq})"));
                     ui.kv("old pk", &hex::encode(old.public_key()));
                     ui.kv("new pk", &hex::encode(new.public_key()));
                     ui.kv("algorithm", new.alg().as_str());
+                    if co_author.is_some() {
+                        ui.kv("co-author", "required");
+                    }
                     ui.line(&format!("  destroy the old seed; {reason}"));
                 }
             }
@@ -349,14 +386,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 linter: &linter,
                 ledger: &mut ledger,
             };
+            let marking = match &cli.classification {
+                Some(c) => c
+                    .parse::<lexicon_core::marking::Marking>()
+                    .map_err(|e| format!("bad classification: {e}"))?,
+                None => lexicon_core::marking::Marking::default(),
+            };
             let minted = minter.mint(MintRequest {
                 name_type: r#type.into(),
                 pool_id: pools.id.clone(),
                 max_attempts,
                 digraph,
+                marking,
             })?;
             if ui.is_json() {
-                ui.json(&minted);
+                let mut v = serde_json::to_value(&minted)?;
+                if let Some(c) = &cli.classification {
+                    v.as_object_mut()
+                        .unwrap()
+                        .insert("classification".into(), c.clone().into());
+                }
+                ui.json(&v);
             } else {
                 ui.heading(&format!("minted {}", minted.name));
                 ui.kv("type", minted.name_type.as_str());
@@ -407,174 +457,252 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Cmd::Ledger { cmd } => {
-            match cmd {
-                LedgerCmd::Verify => {
-                    let led = open_ledger(&cli.data_dir)?;
-                    led.verify_chain()?;
+        Cmd::Ledger { cmd } => match cmd {
+            LedgerCmd::Verify => {
+                let led = open_ledger(&cli.data_dir)?;
+                led.verify_chain()?;
+                let events = led.len()?;
+                let root = hex::encode(led.root()?);
+                let agg = led.aggregate_marking()?;
+                if ui.is_json() {
+                    ui.json(&serde_json::json!({
+                        "ok": true,
+                        "events": events,
+                        "root": root,
+                        "marking": agg.to_string(),
+                    }));
+                } else {
+                    ui.status(true, &format!("{events} events, root 0x{root}"));
+                    ui.kv("marking", &agg.to_string());
+                }
+            }
+            LedgerCmd::Root { sign, agency } => {
+                let led = open_ledger(&cli.data_dir)?;
+                if sign {
+                    let agency = agency
+                        .ok_or(" --agency required with --sign")?
+                        .to_ascii_uppercase();
+                    let auth = load_auth(&cli.data_dir, &agency)?;
+                    let snap = led.sign_root(&auth)?;
+                    if ui.is_json() {
+                        ui.json(&snap);
+                    } else {
+                        ui.heading(&format!("signed root 0x{}", snap.root));
+                        ui.kv("events", &snap.leaf_count.to_string());
+                        ui.kv("by", &snap.authority_id);
+                        ui.kv("at", &snap.signed_at);
+                    }
+                } else {
                     let events = led.len()?;
                     let root = hex::encode(led.root()?);
                     if ui.is_json() {
-                        ui.json(&serde_json::json!({ "ok": true, "events": events, "root": root }));
+                        ui.json(&serde_json::json!({ "root": root, "events": events }));
                     } else {
-                        ui.status(true, &format!("{events} events, root 0x{root}"));
+                        ui.kv("root", &format!("0x{root}"));
+                        ui.kv("events", &events.to_string());
                     }
                 }
-                LedgerCmd::Root { sign, agency } => {
-                    let led = open_ledger(&cli.data_dir)?;
-                    if sign {
-                        let agency = agency
-                            .ok_or(" --agency required with --sign")?
-                            .to_ascii_uppercase();
-                        let auth = load_auth(&cli.data_dir, &agency)?;
-                        let snap = led.sign_root(&auth)?;
+            }
+            LedgerCmd::Names { marking } => {
+                let led = open_ledger(&cli.data_dir)?;
+                let mut recs: Vec<_> = led
+                    .name_records()?
+                    .into_iter()
+                    .filter(|r| r.status == "issued")
+                    .collect();
+                if let Some(m) = &marking {
+                    let want: lexicon_core::marking::Marking =
+                        m.parse().map_err(|e| format!("bad --marking: {e}"))?;
+                    recs.retain(|r| {
+                        r.marking
+                            .parse::<lexicon_core::marking::Marking>()
+                            .is_ok_and(|rm| rm == want)
+                    });
+                }
+                if ui.is_json() {
+                    ui.json(&recs);
+                } else {
+                    let pm = page_marking(&recs, cli.classification.as_deref());
+                    ui.banner_top(&pm);
+                    ui.heading(&format!("{} issued names", recs.len()));
+                    for r in &recs {
+                        ui.line(&format!("  {:<14} {}", r.display, r.marking));
+                    }
+                    ui.banner_bottom(&pm);
+                }
+            }
+            LedgerCmd::Lookup { name } => {
+                let led = open_ledger(&cli.data_dir)?;
+                match led.lookup(&name)? {
+                    Some(r) => {
                         if ui.is_json() {
-                            ui.json(&snap);
+                            ui.json(&r);
                         } else {
-                            ui.heading(&format!("signed root 0x{}", snap.root));
-                            ui.kv("events", &snap.leaf_count.to_string());
-                            ui.kv("by", &snap.authority_id);
-                            ui.kv("at", &snap.signed_at);
-                        }
-                    } else {
-                        let events = led.len()?;
-                        let root = hex::encode(led.root()?);
-                        if ui.is_json() {
-                            ui.json(&serde_json::json!({ "root": root, "events": events }));
-                        } else {
-                            ui.kv("root", &format!("0x{root}"));
-                            ui.kv("events", &events.to_string());
-                        }
-                    }
-                }
-                LedgerCmd::Names => {
-                    let led = open_ledger(&cli.data_dir)?;
-                    let names = led.issued_names()?;
-                    if ui.is_json() {
-                        ui.json(&names);
-                    } else {
-                        ui.heading(&format!("{} issued names", names.len()));
-                        ui.names(&names);
-                    }
-                }
-                LedgerCmd::Lookup { name } => {
-                    let led = open_ledger(&cli.data_dir)?;
-                    match led.lookup(&name)? {
-                        Some(r) => {
-                            if ui.is_json() {
-                                ui.json(&r);
-                            } else {
-                                ui.status(r.status == "issued", &r.display);
-                                ui.kv("status", &r.status);
-                                ui.kv("type", &r.name_type);
-                                ui.kv("agency", &r.authority_id);
-                                ui.kv("seq", &r.event_seq.to_string());
-                                ui.kv("at", &r.created_at);
-                            }
-                        }
-                        None => {
-                            if ui.is_json() {
-                                ui.json(&serde_json::json!({ "name": normalize(&name), "found": false }));
-                            } else {
-                                ui.status(false, "unknown name");
-                            }
-                        }
-                    }
-                }
-                LedgerCmd::History {
-                    agency,
-                    r#type,
-                    status,
-                } => {
-                    let led = open_ledger(&cli.data_dir)?;
-                    let mut recs = led.name_records()?;
-                    if let Some(a) = &agency {
-                        recs.retain(|r| r.authority_id.eq_ignore_ascii_case(a));
-                    }
-                    if let Some(t) = r#type {
-                        let want = NameType::from(t).as_str();
-                        recs.retain(|r| r.name_type == want);
-                    }
-                    if let Some(s) = &status {
-                        recs.retain(|r| r.status.eq_ignore_ascii_case(s));
-                    }
-                    if ui.is_json() {
-                        ui.json(&recs);
-                    } else {
-                        ui.heading(&format!("{} names", recs.len()));
-                        for r in &recs {
-                            ui.line(&format!(
-                                "  {:<6} {:<10} {:<5} {}",
-                                r.status, r.display, r.authority_id, r.created_at
-                            ));
-                        }
-                    }
-                }
-                LedgerCmd::Export { file } => {
-                    let led = open_ledger(&cli.data_dir)?;
-                    let rows = led.event_rows()?;
-                    if file == Path::new("-") {
-                        for r in &rows {
-                            let _ = writeln!(std::io::stdout(), "{}", serde_json::to_string(r)?);
-                        }
-                    } else {
-                        let mut f = std::fs::File::create(&file)?;
-                        for r in &rows {
-                            let _ = writeln!(f, "{}", serde_json::to_string(r)?);
-                        }
-                        if !ui.is_json() {
-                            ui.status(
-                                true,
-                                &format!("{} events to {}", rows.len(), file.display()),
+                            let pm = page_marking(
+                                std::slice::from_ref(&r),
+                                cli.classification.as_deref(),
                             );
+                            ui.banner_top(&pm);
+                            ui.status(r.status == "issued", &r.display);
+                            ui.kv("status", &r.status);
+                            ui.kv("type", &r.name_type);
+                            ui.kv("agency", &r.authority_id);
+                            ui.kv("marking", &r.marking);
+                            ui.kv("seq", &r.event_seq.to_string());
+                            ui.kv("at", &r.created_at);
+                            ui.banner_bottom(&pm);
+                        }
+                    }
+                    None => {
+                        if ui.is_json() {
+                            ui.json(
+                                &serde_json::json!({ "name": normalize(&name), "found": false }),
+                            );
+                        } else {
+                            ui.status(false, "unknown name");
                         }
                     }
                 }
-                LedgerCmd::Audit { public_key } => {
-                    let led = open_ledger(&cli.data_dir)?;
-                    led.verify_chain()?;
-                    let pk = hex::decode(public_key.trim())
-                        .map_err(|e| format!("bad public key hex: {e}"))?;
-                    let total = led.len()?;
-                    let mut failed = Vec::new();
-                    for seq in 1..=total {
-                        if led.verify_event_signature(seq, &pk).is_err() {
-                            failed.push(seq);
+            }
+            LedgerCmd::History {
+                agency,
+                r#type,
+                status,
+                marking,
+            } => {
+                let led = open_ledger(&cli.data_dir)?;
+                let mut recs = led.name_records()?;
+                if let Some(a) = &agency {
+                    recs.retain(|r| r.authority_id.eq_ignore_ascii_case(a));
+                }
+                if let Some(t) = r#type {
+                    let want = NameType::from(t).as_str();
+                    recs.retain(|r| r.name_type == want);
+                }
+                if let Some(s) = &status {
+                    recs.retain(|r| r.status.eq_ignore_ascii_case(s));
+                }
+                if let Some(m) = &marking {
+                    // Spillage guard: a CUI-only workstation filters to CUI
+                    // and never materializes a TS name into its logs.
+                    let want: lexicon_core::marking::Marking =
+                        m.parse().map_err(|e| format!("bad --marking: {e}"))?;
+                    recs.retain(|r| {
+                        r.marking
+                            .parse::<lexicon_core::marking::Marking>()
+                            .is_ok_and(|rm| rm == want)
+                    });
+                }
+                if ui.is_json() {
+                    ui.json(&recs);
+                } else {
+                    let pm = page_marking(&recs, cli.classification.as_deref());
+                    ui.banner_top(&pm);
+                    ui.heading(&format!("{} names", recs.len()));
+                    for r in &recs {
+                        ui.line(&format!(
+                            "  {:<6} {:<14} {:<5} {}  {}",
+                            r.status, r.display, r.authority_id, r.marking, r.created_at
+                        ));
+                    }
+                    ui.banner_bottom(&pm);
+                }
+            }
+            LedgerCmd::Export { file } => {
+                let led = open_ledger(&cli.data_dir)?;
+                let rows = led.event_rows()?;
+                // Container marking = max of exported event markings, floored by
+                // --classification. Each row carries its own marking too.
+                let mut agg = lexicon_core::marking::Marking::default();
+                for r in &rows {
+                    if let Some(m) = r.marking.as_deref() {
+                        if let Ok(parsed) = m.parse::<lexicon_core::marking::Marking>() {
+                            agg = agg.max(&parsed);
                         }
                     }
-                    if ui.is_json() {
-                        ui.json(&serde_json::json!({
-                            "ok": failed.is_empty(),
-                            "events": total,
-                            "signatures_verified": total - (failed.len() as u64),
-                            "failed": failed,
-                        }));
-                    } else if failed.is_empty() {
-                        ui.status(true, &format!("{total} events, all signatures verified"));
-                    } else {
+                }
+                if let Some(c) = &cli.classification {
+                    if let Ok(fm) = c.parse::<lexicon_core::marking::Marking>() {
+                        agg = agg.max(&fm);
+                    }
+                }
+                let banner = (!rows.is_empty() || cli.classification.is_some()).then(|| {
+                    serde_json::json!({
+                        "_banner": true,
+                        "classification": agg.to_string(),
+                        "generated_at": lexicon_core::events::now_rfc3339(),
+                    })
+                });
+                if file == Path::new("-") {
+                    if let Some(b) = &banner {
+                        let _ = writeln!(std::io::stdout(), "{b}");
+                    }
+                    for r in &rows {
+                        let _ = writeln!(std::io::stdout(), "{}", serde_json::to_string(r)?);
+                    }
+                } else {
+                    let mut f = std::fs::File::create(&file)?;
+                    if let Some(b) = &banner {
+                        let _ = writeln!(f, "{b}");
+                    }
+                    for r in &rows {
+                        let _ = writeln!(f, "{}", serde_json::to_string(r)?);
+                    }
+                    if !ui.is_json() {
                         ui.status(
-                            false,
-                            &format!(
-                                "{}/{} signatures verified",
-                                total - (failed.len() as u64),
-                                total
-                            ),
-                        );
-                        ui.line(&format!(
-                            "    failed seqs: {}",
-                            failed
-                                .iter()
-                                .map(|s| s.to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        ));
-                        ui.line(
-                            "    (a failure may indicate a key rotation; audit with the old key for those seqs)",
+                            true,
+                            &format!("{} events to {}", rows.len(), file.display()),
                         );
                     }
                 }
             }
-        }
+            LedgerCmd::Audit { public_key } => {
+                let led = open_ledger(&cli.data_dir)?;
+                led.verify_chain()?;
+                let pks: Vec<Vec<u8>> = public_key
+                    .iter()
+                    .map(|h| hex::decode(h.trim()).map_err(|e| format!("bad public key hex: {e}")))
+                    .collect::<Result<_, _>>()?;
+                let pk_refs: Vec<&[u8]> = pks.iter().map(Vec::as_slice).collect();
+                let total = led.len()?;
+                let mut failed = Vec::new();
+                for seq in 1..=total {
+                    if led.verify_event_signature(seq, &pk_refs).is_err() {
+                        failed.push(seq);
+                    }
+                }
+                if ui.is_json() {
+                    ui.json(&serde_json::json!({
+                        "ok": failed.is_empty(),
+                        "events": total,
+                        "signatures_verified": total - (failed.len() as u64),
+                        "failed": failed,
+                    }));
+                } else if failed.is_empty() {
+                    ui.status(true, &format!("{total} events, all signatures verified"));
+                } else {
+                    ui.status(
+                        false,
+                        &format!(
+                            "{}/{} signatures verified",
+                            total - (failed.len() as u64),
+                            total
+                        ),
+                    );
+                    ui.line(&format!(
+                        "    failed seqs: {}",
+                        failed
+                            .iter()
+                            .map(|s| s.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                    ui.line(
+                            "    (a failure may indicate a key rotation; audit with the old key for those seqs)",
+                        );
+                }
+            }
+        },
         Cmd::Pool { cmd } => match cmd {
             PoolCmd::Inspect { agency, r#type } => {
                 let pools = bundled();
@@ -725,14 +853,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             agency,
             reason,
         } => {
-            retire_or_revoke(&ui, &cli.data_dir, &agency, &name, &reason, false)?;
+            retire_or_revoke(&ui, &cli.data_dir, &agency, &name, &reason, false, None)?;
         }
         Cmd::Revoke {
             name,
             agency,
             reason,
+            co_author,
         } => {
-            retire_or_revoke(&ui, &cli.data_dir, &agency, &name, &reason, true)?;
+            retire_or_revoke(
+                &ui,
+                &cli.data_dir,
+                &agency,
+                &name,
+                &reason,
+                true,
+                co_author.as_deref(),
+            )?;
         }
     }
     Ok(())
@@ -745,6 +882,7 @@ fn retire_or_revoke(
     name: &str,
     reason: &str,
     revoke: bool,
+    co_author: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let agency = agency.to_ascii_uppercase();
     let auth = load_auth(data, &agency)?;
@@ -762,13 +900,30 @@ fn retire_or_revoke(
             authority_id: agency,
         }
     };
-    let seq = led.append(Event::new(kind), &auth)?;
+    let event = Event::new(kind);
+    let canonical = event.canonical_bytes();
+    let seq = if let Some(co) = co_author {
+        let co_agency = co.to_ascii_uppercase();
+        let co_auth = load_auth(data, &co_agency)?;
+        let sig =
+            lexicon_core::Signature::join(vec![auth.sign(&canonical), co_auth.sign(&canonical)]);
+        led.append_with(event, sig)?
+    } else {
+        led.append(event, &auth)?
+    };
     let norm = normalize(name);
     if ui.is_json() {
-        ui.json(&serde_json::json!({ "name": norm, "seq": seq }));
+        ui.json(&serde_json::json!({
+            "name": norm,
+            "seq": seq,
+            "two_person": co_author.is_some(),
+        }));
     } else {
         let verb = if revoke { "revoked" } else { "retired" };
         ui.status(true, &format!("{verb} {norm} (seq {seq})"));
+        if co_author.is_some() {
+            ui.kv("co-author", "required");
+        }
     }
     Ok(())
 }
@@ -791,4 +946,21 @@ fn sample(words: &[String]) -> String {
         s.push_str(", ...");
     }
     s
+}
+
+/// Page marking = max(displayed content), floored by `--classification`.
+/// The banner is the aggregate of what's on the page, not the flag.
+fn page_marking(recs: &[lexicon_core::NameRecord], floor: Option<&str>) -> String {
+    let mut agg = lexicon_core::marking::Marking::default();
+    for r in recs {
+        if let Ok(m) = r.marking.parse::<lexicon_core::marking::Marking>() {
+            agg = agg.max(&m);
+        }
+    }
+    if let Some(f) = floor {
+        if let Ok(fm) = f.parse::<lexicon_core::marking::Marking>() {
+            agg = agg.max(&fm);
+        }
+    }
+    agg.to_string()
 }

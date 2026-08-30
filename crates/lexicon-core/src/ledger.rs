@@ -1,4 +1,4 @@
-use crate::authority::{self, Authority};
+use crate::authority::Authority;
 use crate::error::{Error, Result};
 use crate::events::{now_rfc3339, Event, EventKind, NameStatus};
 use crate::merkle::{self, InclusionProof};
@@ -60,7 +60,8 @@ impl Ledger {
                 status TEXT NOT NULL,
                 event_seq INTEGER NOT NULL,
                 name_type TEXT NOT NULL,
-                authority_id TEXT NOT NULL
+                authority_id TEXT NOT NULL,
+                marking TEXT NOT NULL DEFAULT 'U'
             );
             CREATE TABLE IF NOT EXISTS snapshots (
                 seq INTEGER PRIMARY KEY,
@@ -117,10 +118,20 @@ impl Ledger {
         Ok(self.name_status(name)?.is_some())
     }
 
+    /// Append an event signed by a single authority (the common case).
     pub fn append(&mut self, event: Event, authority: &Authority) -> Result<u64> {
         let canonical = event.canonical_bytes();
-        let hash = event.hash();
         let sig = authority.sign(&canonical);
+        self.append_with(event, sig)
+    }
+
+    /// Append an event with a pre-built (possibly multi-part) signature.
+    /// Used for two-person control: the caller builds a signature from two
+    /// authorities and passes it here. The signature blob is stored as-is;
+    /// it is not part of `canonical` and not hashed into the Merkle tree.
+    pub fn append_with(&mut self, event: Event, sig: Signature) -> Result<u64> {
+        let canonical = event.canonical_bytes();
+        let hash = event.hash();
         let sig_bytes = sig.to_bytes();
         let seq = self.next_seq()?;
 
@@ -143,13 +154,14 @@ impl Ledger {
                 name,
                 name_type,
                 authority_id,
+                marking,
                 ..
             } => {
                 let key = normalize(name);
                 tx.execute(
-                    "INSERT INTO names (normalized, display, status, event_seq, name_type, authority_id)
-                     VALUES (?1, ?2, 'issued', ?3, ?4, ?5)",
-                    params![key, name, seq as i64, name_type.as_str(), authority_id],
+                    "INSERT INTO names (normalized, display, status, event_seq, name_type, authority_id, marking)
+                     VALUES (?1, ?2, 'issued', ?3, ?4, ?5, ?6)",
+                    params![key, name, seq as i64, name_type.as_str(), authority_id, marking.to_string()],
                 )?;
             }
             EventKind::Retired { name, .. } => {
@@ -285,14 +297,18 @@ impl Ledger {
         Ok(())
     }
 
-    pub fn verify_event_signature(&self, seq: u64, pk: &[u8]) -> Result<()> {
+    /// Verify the signature(s) on one event against a set of public keys.
+    /// A single-part event verifies against one pk; a two-part event
+    /// (two-person control) requires two distinct pks. Pass the keys the
+    /// auditor trusts for this authority and its co-authorizers.
+    pub fn verify_event_signature(&self, seq: u64, pks: &[&[u8]]) -> Result<()> {
         let (canonical, sig): (Vec<u8>, Vec<u8>) = self.conn.query_row(
             "SELECT canonical, signature FROM events WHERE seq = ?1",
             [seq as i64],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
         let sig = Signature::from_bytes(&sig)?;
-        authority::verify_signature(pk, &canonical, &sig)
+        crate::sig::verify(pks, &canonical, &sig)
     }
 
     pub fn issued_names(&self) -> Result<Vec<String>> {
@@ -314,7 +330,7 @@ impl Ledger {
         let row = self
             .conn
             .query_row(
-                "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at FROM names n JOIN events e ON n.event_seq = e.seq WHERE n.normalized = ?1",
+                "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking FROM names n JOIN events e ON n.event_seq = e.seq WHERE n.normalized = ?1",
                 [&key],
                 |r| {
                     Ok(NameRecord {
@@ -325,6 +341,7 @@ impl Ledger {
                         authority_id: r.get(4)?,
                         event_seq: r.get::<_, i64>(5)? as u64,
                         created_at: r.get(6)?,
+                        marking: r.get(7)?,
                     })
                 },
             )
@@ -336,7 +353,7 @@ impl Ledger {
     /// the names table is small and this keeps SQL out of the trust path.
     pub fn name_records(&self) -> Result<Vec<NameRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
+            "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.marking FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(NameRecord {
@@ -347,6 +364,7 @@ impl Ledger {
                 authority_id: r.get(4)?,
                 event_seq: r.get::<_, i64>(5)? as u64,
                 created_at: r.get(6)?,
+                marking: r.get(7)?,
             })
         })?;
         let mut out = Vec::new();
@@ -360,7 +378,7 @@ impl Ledger {
     /// signature so an auditor re-verifies without this binary.
     pub fn event_rows(&self) -> Result<Vec<EventRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.seq, e.event_type, e.created_at, n.display, e.canonical, e.event_hash, e.signature FROM events e LEFT JOIN names n ON n.event_seq = e.seq ORDER BY e.seq",
+            "SELECT e.seq, e.event_type, e.created_at, n.display, n.marking, e.canonical, e.event_hash, e.signature FROM events e LEFT JOIN names n ON n.event_seq = e.seq ORDER BY e.seq",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(EventRow {
@@ -368,9 +386,10 @@ impl Ledger {
                 event_type: r.get(1)?,
                 created_at: r.get(2)?,
                 name: r.get(3)?,
-                canonical: hex::encode(r.get::<_, Vec<u8>>(4)?),
-                event_hash: hex::encode(r.get::<_, Vec<u8>>(5)?),
-                signature: hex::encode(r.get::<_, Vec<u8>>(6)?),
+                marking: r.get(4)?,
+                canonical: hex::encode(r.get::<_, Vec<u8>>(5)?),
+                event_hash: hex::encode(r.get::<_, Vec<u8>>(6)?),
+                signature: hex::encode(r.get::<_, Vec<u8>>(7)?),
             })
         })?;
         let mut out = Vec::new();
@@ -378,6 +397,23 @@ impl Ledger {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// The container marking of the ledger: the max of every name's
+    /// marking. If even one name is TS//SCI, the ledger is TS//SCI.
+    /// Derived, not stored — the ledger is unclassified-by-design; the
+    /// aggregate is computed from the `names` table.
+    pub fn aggregate_marking(&self) -> Result<crate::marking::Marking> {
+        let mut stmt = self.conn.prepare("SELECT marking FROM names")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut agg = crate::marking::Marking::default();
+        for r in rows {
+            let m: crate::marking::Marking = r?
+                .parse()
+                .map_err(|e| crate::error::Error::LedgerCorrupt(format!("bad marking: {e}")))?;
+            agg = agg.max(&m);
+        }
+        Ok(agg)
     }
 }
 
@@ -390,6 +426,7 @@ pub struct NameRecord {
     pub authority_id: String,
     pub event_seq: u64,
     pub created_at: String,
+    pub marking: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -398,6 +435,7 @@ pub struct EventRow {
     pub event_type: String,
     pub created_at: String,
     pub name: Option<String>,
+    pub marking: Option<String>,
     pub canonical: String,
     pub event_hash: String,
     pub signature: String,
@@ -443,12 +481,13 @@ mod tests {
             vrf_proof: "00".into(),
             vrf_output: "00".into(),
             indices: vec![1, 2],
+            marking: crate::marking::Marking::default(),
         });
         let seq = led.append(ev, &auth).unwrap();
         assert_eq!(seq, 1);
         assert!(led.is_taken("granite  spire").unwrap());
         led.verify_chain().unwrap();
-        led.verify_event_signature(seq, auth.public_key().as_slice())
+        led.verify_event_signature(seq, &[auth.public_key().as_slice()])
             .unwrap();
         let proof = led.inclusion_proof(seq).unwrap();
         assert!(merkle::verify_inclusion(&proof));
@@ -470,6 +509,7 @@ mod tests {
                 vrf_proof: "00".into(),
                 vrf_output: "00".into(),
                 indices: vec![0, 0],
+                marking: crate::marking::Marking::default(),
             }),
             &auth,
         )

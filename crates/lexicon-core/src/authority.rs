@@ -80,7 +80,7 @@ impl Signer for Authority {
 }
 
 pub fn verify_signature(pk: &[u8], msg: &[u8], sig: &Signature) -> Result<()> {
-    crate::sig::verify(pk, msg, sig)
+    crate::sig::verify(&[pk], msg, sig)
 }
 
 #[cfg(test)]
@@ -91,7 +91,8 @@ mod tests {
     fn sign_roundtrip() {
         let a = Authority::from_seed("DIA", [7u8; 32]);
         let sig = a.sign(b"hello");
-        assert_eq!(sig.alg, SigAlg::Ed25519);
+        assert_eq!(sig.parts.len(), 1);
+        assert_eq!(sig.parts[0].alg, SigAlg::Ed25519);
         verify_signature(a.public_key().as_slice(), b"hello", &sig).unwrap();
         assert!(verify_signature(a.public_key().as_slice(), b"nope", &sig).is_err());
     }
