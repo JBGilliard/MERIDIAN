@@ -14,6 +14,7 @@ path = "src/main.rs"
 default = []
 pq = ["lexicon-core/pq"]
 fips = ["lexicon-core/fips"]
+hsm = ["lexicon-core/hsm"]
 
 [dependencies]
 lexicon-core.workspace = true

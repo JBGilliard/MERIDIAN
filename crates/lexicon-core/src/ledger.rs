@@ -164,10 +164,10 @@ impl Ledger {
         Ok(self.name_status(name)?.is_some())
     }
 
-    /// Append an event signed by a single authority.
-    pub fn append(&mut self, event: Event, authority: &Authority) -> Result<u64> {
+    /// Append an event signed by a single signer.
+    pub fn append(&mut self, event: Event, signer: &dyn Signer) -> Result<u64> {
         let canonical = event.canonical_bytes();
-        let sig = authority.sign(&canonical);
+        let sig = signer.sign(&canonical);
         self.append_with(event, sig)
     }
 

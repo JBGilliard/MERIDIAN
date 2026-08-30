@@ -70,6 +70,40 @@ pub fn public_key(sk: &[u8; 32]) -> [u8; 32] {
     expand_sk(sk).pk
 }
 
+/// VRF prove/pk. OSS: `Authority`. HSM: `RemoteVrfSigner` (`hsm` feature).
+pub trait VrfSigner {
+    fn public_key(&self) -> [u8; 32];
+    fn prove(&self, alpha: &[u8]) -> Result<(VrfProof, VrfOutput)>;
+}
+
+/// Local-socket HSM proxy. Seed stays in the proxy; this process never sees it.
+///
+/// Methods `todo!()` — the type is the seam RFC §3.1 needs.
+#[cfg(feature = "hsm")]
+pub struct RemoteVrfSigner {
+    socket_path: std::path::PathBuf,
+}
+
+#[cfg(feature = "hsm")]
+impl RemoteVrfSigner {
+    pub fn new(socket_path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            socket_path: socket_path.into(),
+        }
+    }
+}
+
+#[cfg(feature = "hsm")]
+impl VrfSigner for RemoteVrfSigner {
+    fn public_key(&self) -> [u8; 32] {
+        todo!("HSM VRF public_key over {}", self.socket_path.display())
+    }
+
+    fn prove(&self, _alpha: &[u8]) -> Result<(VrfProof, VrfOutput)> {
+        todo!("HSM VRF prove over {}", self.socket_path.display())
+    }
+}
+
 fn point_to_string(p: &EdwardsPoint) -> [u8; 32] {
     p.compress().to_bytes()
 }
@@ -302,5 +336,12 @@ mod tests {
             let out = verify(&pk, &alpha, &pi).unwrap();
             prop_assert_eq!(out.as_bytes(), beta.as_bytes());
         }
+    }
+
+    #[cfg(feature = "hsm")]
+    #[test]
+    fn remote_vrf_signer_is_object_safe() {
+        let remote = RemoteVrfSigner::new("/var/run/lexicon-vrf.sock");
+        let _: &dyn VrfSigner = &remote;
     }
 }

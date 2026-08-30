@@ -157,7 +157,7 @@ Meridian-lexicon is a reference implementation, not a deployed system. These ite
 - federation across authorities (pre-commit, quorum, loser-recall);
 - a live authoritative reject feed or SCI/SAP register (the bundled lists are samples);
 - post-quantum transport (ML-KEM, FIPS 203);
-- HSM-backed key storage (the VRF takes the raw seed; an HSM cannot drive it — see the split-authority design in [RFC-0001 §3.1](docs/RFC-0001.md));
+- HSM-backed key storage (`VrfSigner` / `RemoteVrfSigner` behind `--features hsm` is the seam; the proxy is unbuilt. Seed custody is the accreditor's — see [RFC-0001 §3.1](docs/RFC-0001.md));
 - PIV/CAC user binding (events carry an OS-session claim; AU-10 non-repudiation waits on the HSM profile).
 
 See [docs/RFC-0001.md](docs/RFC-0001.md) for the full specification.

@@ -5,8 +5,9 @@ use crate::ledger::Ledger;
 use crate::linter::{LintEngine, NameCandidate};
 use crate::merkle;
 use crate::pool::PoolSet;
+use crate::sig::Signer;
 use crate::types::{indices_from_beta, mint_alpha, normalize, NameType, POOL_ID_V1};
-use crate::vrf::{self, VrfProof};
+use crate::vrf::{self, VrfProof, VrfSigner};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -53,15 +54,33 @@ pub struct MintedName {
 }
 
 pub struct Minter<'a> {
-    pub authority: &'a Authority,
+    pub authority_id: &'a str,
+    pub vrf: &'a dyn VrfSigner,
+    pub signer: &'a dyn Signer,
     pub pools: &'a PoolSet,
     pub linter: &'a LintEngine,
     pub ledger: &'a mut Ledger,
 }
 
-impl Minter<'_> {
+impl<'a> Minter<'a> {
+    pub fn new(
+        authority: &'a Authority,
+        pools: &'a PoolSet,
+        linter: &'a LintEngine,
+        ledger: &'a mut Ledger,
+    ) -> Self {
+        Self {
+            authority_id: &authority.id,
+            vrf: authority,
+            signer: authority,
+            pools,
+            linter,
+            ledger,
+        }
+    }
+
     pub fn mint(&mut self, req: MintRequest) -> Result<MintedName> {
-        let agency = &self.authority.id;
+        let agency = self.authority_id;
         let _ = self.pools.agency(agency)?;
         let sizes = self.pools.pool_sizes(req.name_type, agency)?;
         if sizes.contains(&0) {
@@ -74,7 +93,7 @@ impl Minter<'_> {
 
         while nonce < req.max_attempts {
             let alpha = mint_alpha(agency, req.name_type, &req.pool_id, sequence, nonce);
-            let (proof, beta) = self.authority.vrf_prove(&alpha)?;
+            let (proof, beta) = self.vrf.prove(&alpha)?;
             let mut indices = indices_from_beta(beta.as_bytes(), &sizes);
 
             if let Some(ref dg) = req.digraph {
@@ -138,8 +157,8 @@ impl Minter<'_> {
             let mut event = Event::new(EventKind::Issued {
                 name: name.clone(),
                 name_type: req.name_type,
-                authority_id: agency.clone(),
-                authority_pk: hex::encode(self.authority.public_key()),
+                authority_id: agency.to_string(),
+                authority_pk: hex::encode(self.vrf.public_key()),
                 pool_id: req.pool_id.clone(),
                 sequence,
                 nonce,
@@ -150,14 +169,14 @@ impl Minter<'_> {
             });
             event.attribution = req.attribution.clone();
             let event_hash = event.hash();
-            let ledger_seq = self.ledger.append(event, self.authority)?;
+            let ledger_seq = self.ledger.append(event, self.signer)?;
             let inclusion = self.ledger.inclusion_proof(ledger_seq)?;
 
             return Ok(MintedName {
                 name,
                 name_type: req.name_type,
-                authority_id: agency.clone(),
-                authority_pk: hex::encode(self.authority.public_key()),
+                authority_id: agency.to_string(),
+                authority_pk: hex::encode(self.vrf.public_key()),
                 pool_id: req.pool_id,
                 sequence,
                 nonce,
@@ -194,12 +213,12 @@ impl Minter<'_> {
         let ev = Event::new(EventKind::Attempt {
             candidate: candidate.into(),
             name_type,
-            authority_id: self.authority.id.clone(),
+            authority_id: self.authority_id.to_string(),
             nonce,
             reason,
             detail: detail.into(),
         });
-        self.ledger.append(ev, self.authority)?;
+        self.ledger.append(ev, self.signer)?;
         Ok(())
     }
 }
@@ -303,12 +322,7 @@ mod tests {
         let auth = Authority::from_seed("DIA", [11u8; 32]);
         let mut names = Vec::new();
         for _ in 0..12 {
-            let mut minter = Minter {
-                authority: &auth,
-                pools: &pools,
-                linter: &linter,
-                ledger: &mut ledger,
-            };
+            let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
             let minted = minter.mint(MintRequest::new(NameType::Nickname)).unwrap();
             verify_mint(&minted, &pools).unwrap();
             names.push(minted.name);
@@ -327,24 +341,14 @@ mod tests {
         let mut ledger = Ledger::open_memory().unwrap();
         let auth = Authority::from_seed("DIA", [11u8; 32]);
         let first = {
-            let mut minter = Minter {
-                authority: &auth,
-                pools: &pools,
-                linter: &linter,
-                ledger: &mut ledger,
-            };
+            let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
             minter.mint(MintRequest::new(NameType::CodeWord)).unwrap()
         };
         // Force the same name onto the ledger under a different path, then mint
         // from a second authority? Single-authority remint: pre-insert via retire
         // already occupies the name. Second mint from same key/seq differs by
         // ledger seq in alpha, so just check taken-name is skipped by minting many.
-        let mut minter = Minter {
-            authority: &auth,
-            pools: &pools,
-            linter: &linter,
-            ledger: &mut ledger,
-        };
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
         let second = minter.mint(MintRequest::new(NameType::CodeWord)).unwrap();
         assert_ne!(first.name, second.name);
         verify_mint(&second, &pools).unwrap();
@@ -358,12 +362,7 @@ mod tests {
         let linter = LintEngine::core();
         let mut ledger = Ledger::open_memory().unwrap();
         let auth = Authority::from_seed("CIA", [19u8; 32]);
-        let mut minter = Minter {
-            authority: &auth,
-            pools: &pools,
-            linter: &linter,
-            ledger: &mut ledger,
-        };
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
         let c = minter
             .mint(MintRequest {
                 name_type: NameType::Cryptonym,
@@ -391,16 +390,29 @@ mod tests {
         let linter = LintEngine::core();
         let mut ledger = Ledger::open_memory().unwrap();
         let auth = Authority::from_seed("DIA", [5u8; 32]);
-        let mut minter = Minter {
-            authority: &auth,
-            pools: &pools,
-            linter: &linter,
-            ledger: &mut ledger,
-        };
+        let mut minter = Minter::new(&auth, &pools, &linter, &mut ledger);
         let e = minter
             .mint(MintRequest::new(NameType::ExerciseTerm))
             .unwrap();
         assert!(e.name.contains(' '));
         verify_mint(&e, &pools).unwrap();
+    }
+
+    #[test]
+    fn minter_accepts_split_vrf_and_signer() {
+        let pools = tiny_pools();
+        let linter = LintEngine::core();
+        let mut ledger = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [11u8; 32]);
+        let mut minter = Minter {
+            authority_id: &auth.id,
+            vrf: &auth,
+            signer: &auth,
+            pools: &pools,
+            linter: &linter,
+            ledger: &mut ledger,
+        };
+        let minted = minter.mint(MintRequest::new(NameType::Nickname)).unwrap();
+        verify_mint(&minted, &pools).unwrap();
     }
 }

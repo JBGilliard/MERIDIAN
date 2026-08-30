@@ -1,7 +1,7 @@
 use crate::crypto;
 use crate::error::{Error, Result};
 use crate::sig::{SigAlg, Signature, Signer};
-use crate::vrf::{self, VrfOutput, VrfProof};
+use crate::vrf::{self, VrfOutput, VrfProof, VrfSigner};
 use std::fs;
 use std::path::Path;
 use zeroize::Zeroize;
@@ -37,7 +37,7 @@ impl Authority {
     }
 
     pub fn vrf_prove(&self, alpha: &[u8]) -> Result<(VrfProof, VrfOutput)> {
-        vrf::prove(&self.seed, alpha)
+        VrfSigner::prove(self, alpha)
     }
 
     pub fn save(&self, dir: &Path) -> Result<()> {
@@ -85,6 +85,16 @@ impl Signer for Authority {
     }
 }
 
+impl VrfSigner for Authority {
+    fn public_key(&self) -> [u8; 32] {
+        vrf::public_key(&self.seed)
+    }
+
+    fn prove(&self, alpha: &[u8]) -> Result<(VrfProof, VrfOutput)> {
+        vrf::prove(&self.seed, alpha)
+    }
+}
+
 pub fn verify_signature(pk: &[u8], msg: &[u8], sig: &Signature) -> Result<()> {
     crate::sig::verify(&[pk], msg, sig)
 }
@@ -110,5 +120,17 @@ mod tests {
             Ok(_) => panic!("expected missing key"),
         };
         assert!(matches!(err, Error::MissingKey { ref agency } if agency == "CIA"));
+    }
+
+    #[test]
+    fn vrf_signer_matches_free_prove() {
+        let a = Authority::from_seed("DIA", [7u8; 32]);
+        let alpha = b"alpha";
+        let (pi, beta) = VrfSigner::prove(&a, alpha).unwrap();
+        let (pi2, beta2) = vrf::prove(&a.seed(), alpha).unwrap();
+        assert_eq!(pi, pi2);
+        assert_eq!(beta, beta2);
+        assert_eq!(VrfSigner::public_key(&a), vrf::public_key(&a.seed()));
+        assert_eq!(VrfSigner::public_key(&a), a.public_key());
     }
 }

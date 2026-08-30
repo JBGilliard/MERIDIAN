@@ -28,6 +28,8 @@ default = []
 pq = ["ml-dsa"]
 # SHA-256 / Ed25519 / ML-DSA via AWS-LC FIPS 140-3. ECVRF stays outside (SC-13(2)).
 fips = ["dep:aws-lc-rs"]
+# Local-socket VRF proxy. RemoteVrfSigner is a compiling stub; the proxy is the HSM profile.
+hsm = []
 
 [dev-dependencies]
 proptest = "1.6"

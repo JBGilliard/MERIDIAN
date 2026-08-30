@@ -33,6 +33,8 @@ pub use pool::{Pool, PoolSet};
 pub use sig::MlDsaSigner;
 pub use sig::{SigAlg, Signature, Signer};
 pub use types::{NameType, POOL_ID, POOL_ID_V1};
-pub use vrf::{prove, verify, VrfOutput, VrfProof, PROOF_LEN, SUITE_STRING};
+#[cfg(feature = "hsm")]
+pub use vrf::RemoteVrfSigner;
+pub use vrf::{prove, verify, VrfOutput, VrfProof, VrfSigner, PROOF_LEN, SUITE_STRING};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

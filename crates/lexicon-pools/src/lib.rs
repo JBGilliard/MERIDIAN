@@ -300,12 +300,7 @@ mod tests {
             NameType::ExerciseTerm,
         ] {
             for _ in 0..15 {
-                let mut minter = Minter {
-                    authority: &dia,
-                    pools,
-                    linter: &linter,
-                    ledger: &mut ledger,
-                };
+                let mut minter = Minter::new(&dia, pools, &linter, &mut ledger);
                 let minted = minter.mint(MintRequest::new(ty)).unwrap();
                 verify_mint(&minted, pools).unwrap();
                 assert!(seen.insert(minted.name), "duplicate {}", seen.len());
@@ -313,12 +308,7 @@ mod tests {
         }
         // Cryptonym is a CIA convention; only CIA carries digraphs.
         for _ in 0..15 {
-            let mut minter = Minter {
-                authority: &cia,
-                pools,
-                linter: &linter,
-                ledger: &mut ledger,
-            };
+            let mut minter = Minter::new(&cia, pools, &linter, &mut ledger);
             let minted = minter.mint(MintRequest::new(NameType::Cryptonym)).unwrap();
             verify_mint(&minted, pools).unwrap();
             assert!(seen.insert(minted.name), "duplicate {}", seen.len());

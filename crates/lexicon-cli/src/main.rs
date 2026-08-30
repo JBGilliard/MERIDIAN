@@ -396,12 +396,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let pools = bundled();
             let linter = lexicon_pools::bundled_linter();
             let mut ledger = open_ledger(&cli.data_dir)?;
-            let mut minter = Minter {
-                authority: &auth,
-                pools,
-                linter: &linter,
-                ledger: &mut ledger,
-            };
+            let mut minter = Minter::new(&auth, pools, &linter, &mut ledger);
             let marking = match &cli.classification {
                 Some(c) => c
                     .parse::<lexicon_core::marking::Marking>()

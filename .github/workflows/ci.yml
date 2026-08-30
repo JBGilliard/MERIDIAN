@@ -25,6 +25,10 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test
         run: cargo test --workspace
+      - name: clippy hsm
+        run: cargo clippy -p lexicon-core --features hsm --all-targets -- -D warnings
+      - name: test hsm
+        run: cargo test -p lexicon-core --features hsm
 
   fips:
     name: fips
