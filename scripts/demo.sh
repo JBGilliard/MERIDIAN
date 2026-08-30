@@ -16,8 +16,8 @@ if [[ ! -x "$BIN" ]]; then
 fi
 
 echo "== keygen"
-"$BIN" --data-dir "$DATA" keygen --agency DIA --json
-"$BIN" --data-dir "$DATA" keygen --agency CIA --json
+"$BIN" --data-dir "$DATA" key generate --agency DIA --json
+"$BIN" --data-dir "$DATA" key generate --agency CIA --json
 
 echo "== mint 12 nicknames + 4 cryptonyms + 2 code words"
 names=()

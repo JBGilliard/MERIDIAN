@@ -19,7 +19,7 @@ pub use authority::Authority;
 pub use error::{Error, Result};
 pub use events::{Event, EventKind, NameStatus};
 pub use janap::{JanapEntry, JanapSlot, JanapTable};
-pub use ledger::{Ledger, SignedRoot};
+pub use ledger::{EventRow, Ledger, NameRecord, SignedRoot};
 pub use linter::{LintEngine, LintHit, LintRule, LintSeverity, NameCandidate, RejectListRule};
 pub use merkle::InclusionProof;
 pub use mint::{verify_issued, verify_mint, MintRequest, MintedName, Minter};

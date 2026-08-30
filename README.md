@@ -82,6 +82,21 @@ The target pushes arbitrary seeds through VRF prove/verify, pool indexing, and t
 | `lexicon-pools` | word lists, digraph taxonomy, agency letter-blocks, reject lists |
 | `lexicon-cli` | the `lexicon` binary |
 
+## Steward commands
+
+`pool agency` and `pool reject` edit the source data files. A rebuild and a `POOL_ID` bump ship the change into the binary. The commands say so in their output.
+
+```
+lexicon pool agency list
+lexicon pool agency add --id USAF --first-letters ABCDE --sap TK
+lexicon pool agency remove --id USAF
+lexicon pool reject list --set historical
+lexicon pool reject add --set historical --token TICTAC
+lexicon pool reject remove --set historical --token TICTAC
+```
+
+Reject sets: `historical`, `military`. Agency `digraphs` are empty for non-CIA agencies (cryptonym is a CIA convention).
+
 ## License
 
 Apache-2.0. The patent grant matters for government adoption.

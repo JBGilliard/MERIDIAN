@@ -306,6 +306,101 @@ impl Ledger {
         }
         Ok(out)
     }
+
+    /// One name's full record, or None if unknown. Joins to events for the
+    /// mint/retire/revoke timestamp.
+    pub fn lookup(&self, name: &str) -> Result<Option<NameRecord>> {
+        let key = normalize(name);
+        let row = self
+            .conn
+            .query_row(
+                "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at FROM names n JOIN events e ON n.event_seq = e.seq WHERE n.normalized = ?1",
+                [&key],
+                |r| {
+                    Ok(NameRecord {
+                        display: r.get(0)?,
+                        normalized: r.get(1)?,
+                        status: r.get(2)?,
+                        name_type: r.get(3)?,
+                        authority_id: r.get(4)?,
+                        event_seq: r.get::<_, i64>(5)? as u64,
+                        created_at: r.get(6)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Every name record, ordered by issue seq. The CLI filters in Rust;
+    /// the names table is small and this keeps SQL out of the trust path.
+    pub fn name_records(&self) -> Result<Vec<NameRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.event_seq",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(NameRecord {
+                display: r.get(0)?,
+                normalized: r.get(1)?,
+                status: r.get(2)?,
+                name_type: r.get(3)?,
+                authority_id: r.get(4)?,
+                event_seq: r.get::<_, i64>(5)? as u64,
+                created_at: r.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Raw event rows for offline audit / export. Includes canonical, hash, and
+    /// signature so an auditor re-verifies without this binary.
+    pub fn event_rows(&self) -> Result<Vec<EventRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.seq, e.event_type, e.created_at, n.display, e.canonical, e.event_hash, e.signature FROM events e LEFT JOIN names n ON n.event_seq = e.seq ORDER BY e.seq",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(EventRow {
+                seq: r.get::<_, i64>(0)? as u64,
+                event_type: r.get(1)?,
+                created_at: r.get(2)?,
+                name: r.get(3)?,
+                canonical: hex::encode(r.get::<_, Vec<u8>>(4)?),
+                event_hash: hex::encode(r.get::<_, Vec<u8>>(5)?),
+                signature: hex::encode(r.get::<_, Vec<u8>>(6)?),
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NameRecord {
+    pub display: String,
+    pub normalized: String,
+    pub status: String,
+    pub name_type: String,
+    pub authority_id: String,
+    pub event_seq: u64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventRow {
+    pub seq: u64,
+    pub event_type: String,
+    pub created_at: String,
+    pub name: Option<String>,
+    pub canonical: String,
+    pub event_hash: String,
+    pub signature: String,
 }
 
 fn update_status(
