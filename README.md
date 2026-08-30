@@ -46,12 +46,12 @@ The display name has one namespace across all markings. A CUI program and a TS//
 Every name-displaying command prints the classification at the top and the bottom of the page. The page marking is the maximum of the displayed content, floored by `--classification`. This is the CAPCO rule: a container takes the highest marking of its contents. If one name is `TS//SCI`, the page is `TS//SCI`.
 
 ```
-CLASSIFICATION: TS//SCI//TK
+===== CLASSIFICATION: TS//SCI//TK ======
 ----------------------------------------
   AVOS           TS//SCI//TK
   EGGCUP         CUI
 ----------------------------------------
-CLASSIFICATION: TS//SCI//TK
+===== CLASSIFICATION: TS//SCI//TK ======
 ```
 
 `--marking <m>` filters the displayed content to one marking. This is the spillage guard. A CUI-only workstation runs `ledger names --marking CUI` and never materializes a TS name into its logs. The banner is then `CUI`, the max of the filtered set.

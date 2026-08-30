@@ -93,6 +93,12 @@ impl Ledger {
         let current: i64 = self
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if current > MAX_SCHEMA_VERSION {
+            return Err(Error::SchemaTooNew {
+                found: current,
+                max: MAX_SCHEMA_VERSION,
+            });
+        }
         if current < 1 {
             let has_marking: bool = self
                 .conn
@@ -174,7 +180,7 @@ impl Ledger {
         let canonical = event.canonical_bytes();
         let hash = event.hash();
         let sig_bytes = sig.to_bytes();
-        let attribution = event.attribution.canonical_bytes();
+        let attribution = event.attribution.display();
         let seq = self.next_seq()?;
 
         let tx = self.conn.transaction()?;
@@ -188,7 +194,7 @@ impl Ledger {
                 hash.as_slice(),
                 sig_bytes.as_slice(),
                 event.created_at,
-                String::from_utf8(attribution).unwrap_or_default(),
+                attribution,
             ],
         )?;
 
@@ -207,11 +213,19 @@ impl Ledger {
                     params![key, name, seq as i64, name_type.as_str(), authority_id, marking.to_string()],
                 )?;
             }
-            EventKind::Retired { name, .. } => {
-                update_status(&tx, name, NameStatus::Retired, seq)?;
+            EventKind::Retired {
+                name,
+                authority_id,
+                ..
+            } => {
+                update_status(&tx, name, NameStatus::Retired, seq, authority_id)?;
             }
-            EventKind::Revoked { name, .. } => {
-                update_status(&tx, name, NameStatus::Revoked, seq)?;
+            EventKind::Revoked {
+                name,
+                authority_id,
+                ..
+            } => {
+                update_status(&tx, name, NameStatus::Revoked, seq, authority_id)?;
             }
             EventKind::KeyRotated { .. } | EventKind::Attempt { .. } => {}
         }
@@ -484,21 +498,38 @@ pub struct EventRow {
     pub signature: String,
 }
 
+const MAX_SCHEMA_VERSION: i64 = 2;
+
 fn update_status(
     tx: &rusqlite::Transaction<'_>,
     name: &str,
     status: NameStatus,
     seq: u64,
+    requester: &str,
 ) -> Result<()> {
     let key = normalize(name);
     let n = tx.execute(
-        "UPDATE names SET status = ?1, event_seq = ?2 WHERE normalized = ?3",
-        params![status.as_str(), seq as i64, key],
+        "UPDATE names SET status = ?1, event_seq = ?2 WHERE normalized = ?3 AND authority_id = ?4",
+        params![status.as_str(), seq as i64, key, requester],
     )?;
     if n == 0 {
-        return Err(Error::Parse(format!(
-            "cannot {status:?} unknown name {name}"
-        )));
+        let owner: Option<String> = tx
+            .query_row(
+                "SELECT authority_id FROM names WHERE normalized = ?1",
+                [&key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        return match owner {
+            Some(owner) => Err(Error::NotOwner {
+                name: name.to_string(),
+                requester: requester.to_string(),
+                owner,
+            }),
+            None => Err(Error::Parse(format!(
+                "cannot {status:?} unknown name {name}"
+            ))),
+        };
     }
     Ok(())
 }
@@ -571,5 +602,100 @@ mod tests {
             Some(NameStatus::Retired)
         );
         assert!(led.is_taken("COPPER LEDGER").unwrap());
+    }
+
+    #[test]
+    fn attribution_column_stores_display_not_canonical() {
+        let mut led = Ledger::open_memory().unwrap();
+        let auth = Authority::from_seed("DIA", [3u8; 32]);
+        let attr = crate::attribition::Attribution {
+            user: "jdoe".into(),
+            host: "ws001".into(),
+            ip: None,
+            hwid: Some("H".repeat(200)),
+        };
+        let mut ev = Event::new(EventKind::Issued {
+            name: "GRANITE SPIRE".into(),
+            name_type: NameType::Nickname,
+            authority_id: "DIA".into(),
+            authority_pk: hex::encode(auth.public_key()),
+            pool_id: "p".into(),
+            sequence: 1,
+            nonce: 0,
+            vrf_proof: "00".into(),
+            vrf_output: "00".into(),
+            indices: vec![1, 2],
+            marking: crate::marking::Marking::default(),
+        });
+        ev.attribution = attr.clone();
+        led.append(ev, &auth).unwrap();
+        let rec = led.lookup("GRANITE SPIRE").unwrap().unwrap();
+        assert_eq!(rec.attribution, attr.display());
+        assert!(rec.attribution.contains("jdoe@ws001"));
+        assert!(rec.attribution.contains(&"H".repeat(200)));
+    }
+
+    #[test]
+    fn foreign_authority_cannot_retire() {
+        let mut led = Ledger::open_memory().unwrap();
+        let cia = Authority::from_seed("CIA", [1u8; 32]);
+        let dia = Authority::from_seed("DIA", [3u8; 32]);
+        led.append(
+            Event::new(EventKind::Issued {
+                name: "GRANITE SPIRE".into(),
+                name_type: NameType::Nickname,
+                authority_id: "CIA".into(),
+                authority_pk: hex::encode(cia.public_key()),
+                pool_id: "p".into(),
+                sequence: 1,
+                nonce: 0,
+                vrf_proof: "00".into(),
+                vrf_output: "00".into(),
+                indices: vec![1, 2],
+                marking: crate::marking::Marking::default(),
+            }),
+            &cia,
+        )
+        .unwrap();
+        let err = led
+            .append(
+                Event::new(EventKind::Retired {
+                    name: "GRANITE SPIRE".into(),
+                    reason: "complete".into(),
+                    authority_id: "DIA".into(),
+                }),
+                &dia,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::NotOwner {
+                ref name,
+                ref requester,
+                ref owner
+            } if name == "GRANITE SPIRE" && requester == "DIA" && owner == "CIA"
+        ));
+        assert_eq!(
+            led.name_status("GRANITE SPIRE").unwrap(),
+            Some(NameStatus::Issued)
+        );
+    }
+
+    #[test]
+    fn refuse_schema_too_new() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ledger.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA user_version = 99").unwrap();
+        }
+        match Ledger::open(&path) {
+            Err(Error::SchemaTooNew {
+                found: 99,
+                max: MAX_SCHEMA_VERSION,
+            }) => {}
+            Err(e) => panic!("wrong error: {e}"),
+            Ok(_) => panic!("stale binary must refuse a newer schema"),
+        }
     }
 }

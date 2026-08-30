@@ -140,6 +140,13 @@ pub struct Event {
 }
 
 impl Event {
+    /// v2 binds attribution. v3 is the PQ valve (RFC §10).
+    pub const PREFIX: &'static [u8] = b"MERIDIAN-EVENT-v2\0";
+
+    pub fn version() -> u8 {
+        2
+    }
+
     pub fn new(kind: EventKind) -> Self {
         Self {
             kind,
@@ -151,7 +158,7 @@ impl Event {
     /// Fixed-order length-prefixed encoding. Not JSON — JSON key order is a footgun.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.extend_from_slice(b"MERIDIAN-EVENT-v2\0");
+        buf.extend_from_slice(Self::PREFIX);
         buf.push(self.kind.tag());
         put_str(&mut buf, &self.created_at);
         buf.extend(&self.attribution.canonical_bytes());
@@ -336,5 +343,21 @@ mod tests {
         let cb = b.canonical_bytes();
         assert!(ca.windows(b"jdoe".len()).any(|w| w == b"jdoe"));
         assert!(cb.windows(b"asmith".len()).any(|w| w == b"asmith"));
+    }
+
+    #[test]
+    fn prefix_version_is_discoverable() {
+        let expected = format!("MERIDIAN-EVENT-v{}\0", Event::version());
+        assert_eq!(Event::PREFIX, expected.as_bytes());
+        let e = Event {
+            kind: EventKind::Retired {
+                name: "x".into(),
+                reason: "y".into(),
+                authority_id: "DIA".into(),
+            },
+            created_at: "2026-01-01T00:00:00Z".into(),
+            attribution: crate::attribition::Attribution::default(),
+        };
+        assert!(e.canonical_bytes().starts_with(Event::PREFIX));
     }
 }

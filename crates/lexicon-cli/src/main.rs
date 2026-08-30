@@ -988,8 +988,8 @@ fn whoami() -> Option<String> {
 
 fn detect_ip() -> Option<String> {
     use std::net::UdpSocket;
-    UdpSocket::bind("0.0.0.0:0:0").ok().and_then(|s| {
-        s.connect("8.8.8.8.8:80").ok()?;
+    UdpSocket::bind("0.0.0.0:0").ok().and_then(|s| {
+        s.connect("8.8.8.8:80").ok()?;
         s.local_addr().ok().map(|a| a.ip().to_string())
     })
 }

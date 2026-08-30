@@ -22,6 +22,22 @@ impl Attribution {
         put_opt(&mut out, self.hwid.as_deref());
         out
     }
+
+    /// Human-readable form for the ledger TEXT column.
+    /// Canonical bytes are length-prefixed binary — not UTF-8 once any
+    /// field is >= 128 bytes (ioreg hwid). Store this, sign that.
+    pub fn display(&self) -> String {
+        let mut s = format!("{}@{}", self.user, self.host);
+        if let Some(ip) = &self.ip {
+            s.push_str(" ip=");
+            s.push_str(ip);
+        }
+        if let Some(hwid) = &self.hwid {
+            s.push_str(" hwid=");
+            s.push_str(hwid);
+        }
+        s
+    }
 }
 
 fn put(out: &mut Vec<u8>, s: &str) {
@@ -71,5 +87,20 @@ mod tests {
         };
         // both stable; presence flag distinguishes Some from None.
         assert_ne!(a.canonical_bytes(), b.canonical_bytes());
+    }
+
+    #[test]
+    fn display_roundtrip_long_hwid() {
+        let hwid = "H".repeat(200);
+        let a = Attribution {
+            user: "jdoe".into(),
+            host: "ws001".into(),
+            ip: Some("10.0.0.1".into()),
+            hwid: Some(hwid.clone()),
+        };
+        let s = a.display();
+        assert_eq!(s, format!("jdoe@ws001 ip=10.0.0.1 hwid={hwid}"));
+        // length prefix 200 = 0xC8 makes the blob invalid UTF-8
+        assert!(String::from_utf8(a.canonical_bytes()).is_err());
     }
 }

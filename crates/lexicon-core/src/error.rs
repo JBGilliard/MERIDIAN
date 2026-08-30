@@ -66,4 +66,14 @@ pub enum Error {
 
     #[error("parse: {0}")]
     Parse(String),
+
+    #[error("{requester} cannot modify {name}: owned by {owner}")]
+    NotOwner {
+        name: String,
+        requester: String,
+        owner: String,
+    },
+
+    #[error("ledger schema version {found} is newer than this binary (max {max}); upgrade lexicon")]
+    SchemaTooNew { found: i64, max: i64 },
 }
