@@ -1438,37 +1438,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 let prof: Profile = profile.into();
-                // Build the roll-up marking once; banner_top renders it via
-                // display_banner, so the composite SAR token (spaces between
-                // sibling compartments) is emitted correctly.
-                let mut m = roll_up_marking(&p, &selected);
-                if matches!(prof, Profile::DoDBanner) {
-                    for c in &mut m.compartments {
-                        if c.kind == lexicon_core::marking::CompartmentKind::Sap {
-                            // SAR-<prog nickname>-<comp ids>; comp IDs stay
-                            // (compartment nicknames contain spaces).
-                            let head = p.nickname.clone();
-                            c.designator = if selected.is_empty() {
-                                head
-                            } else {
-                                let mut ids: Vec<String> =
-                                    selected.iter().map(|x| x.id.to_ascii_uppercase()).collect();
-                                ids.sort();
-                                ids.dedup();
-                                format!("{head}-{}", ids.join(" "))
-                            };
+                // `roll_up_marking` builds the CAPCO form (SAR-QSV-HOL-PER-SEN-TEV,
+                // hyphen-joined siblings). The DoD banner drops PIDs per
+                // DoDM 5205.07, so it swaps the SAR token to the program
+                // nickname with no compartment suffix.
+                let m = roll_up_marking(&p, &selected);
+                let rollup = m.display_portion();
+                let banner = match prof {
+                    Profile::DoDBanner => {
+                        let mut mb = m.clone();
+                        for c in &mut mb.compartments {
+                            if c.kind == lexicon_core::marking::CompartmentKind::Sap {
+                                c.designator = p.nickname.clone();
+                            }
                         }
+                        mb.display_banner()
                     }
-                }
-                let banner = m.display_banner();
-                let portion = m.display_portion();
+                    Profile::CapcoBanner => m.display_banner(),
+                    // --profile is dod|capco; Portion is not a banner profile.
+                    Profile::Portion => m.display_portion(),
+                };
                 if ui.is_json() {
                     ui.json(&serde_json::json!({
                         "program": p.pid,
                         "slices": selected.iter().map(|c| c.id.clone()).collect::<Vec<_>>(),
                         "profile": format!("{prof:?}").to_lowercase(),
                         "banner": banner,
-                        "portion": portion,
+                        "rollup": rollup,
                     }));
                 } else {
                     ui.banner_top(&m);
@@ -1478,7 +1474,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         &selected.iter().map(|c| c.id.clone()).collect::<Vec<_>>().join(","),
                     );
                     ui.kv("banner", &banner);
-                    ui.kv("portion", &portion);
+                    ui.kv("rollup", &rollup);
                     ui.banner_bottom(&m);
                 }
             }

@@ -363,9 +363,12 @@ pub fn render_roll_up(
     let mut m = roll_up_marking(program, compartments);
     match profile {
         Profile::DoDBanner => {
+            // DoDM 5205.07: PIDs stay out of the banner. The DoD banner is
+            // the standing form (program nickname, no compartment IDs);
+            // slices live in portion marks and the slices field.
             for c in &mut m.compartments {
                 if c.kind == CompartmentKind::Sap {
-                    c.designator = sar_designator(program, compartments, true);
+                    c.designator = program.nickname.clone();
                 }
             }
             m.display_banner()
@@ -445,6 +448,11 @@ pub fn roll_up_marking(program: &Program, compartments: &[&Compartment]) -> Mark
 /// SAR designator. `use_nickname` swaps the PID for the program nickname
 /// (DoD banner); compartment IDs stay (compartment nicknames contain
 /// spaces and would be ambiguous between siblings).
+///
+/// CAPCO separators: hyphen joins a control to its compartments and joins
+/// sibling compartments; space joins subcompartments under one compartment.
+/// `SAR-QSV-HOL-PER-SEN-TEV` = four siblings; `SAR-QSV-HOL-PER A1 A2-SEN-TEV`
+/// = HOL, PER (with A1 A2 nested), SEN, TEV.
 fn sar_designator(program: &Program, compartments: &[&Compartment], use_nickname: bool) -> String {
     let head = if use_nickname {
         program.nickname.clone()
@@ -454,10 +462,39 @@ fn sar_designator(program: &Program, compartments: &[&Compartment], use_nickname
     if compartments.is_empty() {
         return head;
     }
-    let mut ids: Vec<String> = compartments.iter().map(|c| key(&c.id)).collect();
-    ids.sort();
-    ids.dedup();
-    format!("{head}-{}", ids.join(" "))
+    let entries: Vec<(String, Option<String>)> = compartments
+        .iter()
+        .map(|c| (key(&c.id), c.parent_id.as_deref().map(key)))
+        .collect();
+    let selected: std::collections::HashSet<String> =
+        entries.iter().map(|(id, _)| id.clone()).collect();
+    // Top-level = parent is None or parent not in the selected set.
+    let mut top: Vec<&(String, Option<String>)> = entries
+        .iter()
+        .filter(|(_, p)| match p {
+            None => true,
+            Some(parent) => !selected.contains(parent),
+        })
+        .collect();
+    top.sort_by(|a, b| a.0.cmp(&b.0));
+    let parts: Vec<String> = top
+        .iter()
+        .map(|(id, _)| {
+            let mut children: Vec<String> = entries
+                .iter()
+                .filter(|(_, p)| p.as_deref() == Some(id))
+                .map(|(cid, _)| cid.clone())
+                .collect();
+            children.sort();
+            children.dedup();
+            if children.is_empty() {
+                id.clone()
+            } else {
+                format!("{id} {}", children.join(" "))
+            }
+        })
+        .collect();
+    format!("{head}-{}", parts.join("-"))
 }
 
 fn normalize_program(p: &mut Program) {
@@ -589,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn dod_banner_uses_program_nickname_and_compartment_ids() {
+    fn dod_banner_keeps_pids_out() {
         let p = qsv();
         let c = hol();
         // Standing: program nickname, no compartments.
@@ -597,13 +634,13 @@ mod tests {
             render_marking(&p, None, Profile::DoDBanner),
             "TOP SECRET//TK//SAR-DILIGENTLY IMPRESSED//NOFORN"
         );
-        // One compartment: program nickname + '-' + compartment ID.
-        // (Compartment nicknames contain spaces; IDs stay even in DoD.)
+        // DoD banner drops compartment PIDs (DoDM 5205.07); slices live in
+        // portion marks and the slices field, not the banner string.
         assert_eq!(
             render_marking(&p, Some(&c), Profile::DoDBanner),
-            "TOP SECRET//TK//SAR-DILIGENTLY IMPRESSED-HOL//NOFORN"
+            "TOP SECRET//TK//SAR-DILIGENTLY IMPRESSED//NOFORN"
         );
-        // CAPCO short and portion keep the PID form.
+        // CAPCO short and portion keep the PID + compartment form.
         assert_eq!(
             render_marking(&p, Some(&c), Profile::CapcoBanner),
             "TOP SECRET//TK//SAR-QSV-HOL//NOFORN"
@@ -618,7 +655,8 @@ mod tests {
     fn roll_up_one_sap_with_sibling_compartments() {
         // Program has no SCI; only SEN carries TK. Standing banner has no TK;
         // roll-up including SEN pulls TK in. Sibling compartments are
-        // hyphenated to the PID and space-separated, one SAR token.
+        // hyphen-joined under one SAR token (CAPCO: hyphen joins siblings;
+        // space joins subcompartments under one compartment).
         let mut p = qsv();
         p.controls.retain(|c| c.kind != ControlKind::Sci); // no TK on program
         let hol_c = Compartment {
@@ -647,24 +685,55 @@ mod tests {
             "TS//SAR-QSV-PER//NF"
         );
         // All four slices: TK appears (SEN included), one SAR token,
-        // siblings space-separated in alphanumeric order.
+        // siblings hyphen-joined in alphanumeric order.
         let all: Vec<&Compartment> = vec![&hol_c, &per_c, &sen_c, &tev_c];
         assert_eq!(
             render_roll_up(&p, &all, Profile::CapcoBanner),
-            "TOP SECRET//TK//SAR-QSV-HOL PER SEN TEV//NOFORN"
+            "TOP SECRET//TK//SAR-QSV-HOL-PER-SEN-TEV//NOFORN"
         );
+        // DoD banner: PIDs stay out; banner is the standing form.
         assert_eq!(
             render_roll_up(&p, &all, Profile::DoDBanner),
-            "TOP SECRET//TK//SAR-DILIGENTLY IMPRESSED-HOL PER SEN TEV//NOFORN"
+            "TOP SECRET//TK//SAR-DILIGENTLY IMPRESSED//NOFORN"
         );
         assert_eq!(
             render_roll_up(&p, &all, Profile::Portion),
-            "TS//TK//SAR-QSV-HOL PER SEN TEV//NF"
+            "TS//TK//SAR-QSV-HOL-PER-SEN-TEV//NF"
         );
         // Standing (no slices): no TK, no compartments.
         assert_eq!(
             render_roll_up(&p, &[], Profile::CapcoBanner),
             "TOP SECRET//SAR-QSV//NOFORN"
+        );
+    }
+
+    #[test]
+    fn roll_up_nests_subcompartments_with_spaces() {
+        // PER has subcompartments A1, A2 (parent_id = PER). Siblings are
+        // hyphen-joined; subcompartments under one compartment are
+        // space-joined: SAR-QSV-HOL-PER A1 A2-SEN-TEV.
+        let mut p = qsv();
+        p.controls.retain(|c| c.kind != ControlKind::Sci);
+        let hol_c = Compartment { id: "HOL".into(), controls: vec![], ..hol() };
+        let per_c = Compartment { id: "PER".into(), controls: vec![], ..hol() };
+        let a1 = Compartment {
+            id: "A1".into(),
+            parent_id: Some("PER".into()),
+            controls: vec![],
+            ..hol()
+        };
+        let a2 = Compartment {
+            id: "A2".into(),
+            parent_id: Some("PER".into()),
+            controls: vec![],
+            ..hol()
+        };
+        let sen_c = Compartment { id: "SEN".into(), controls: vec![], ..hol() };
+        let tev_c = Compartment { id: "TEV".into(), controls: vec![], ..hol() };
+        let all: Vec<&Compartment> = vec![&hol_c, &per_c, &a1, &a2, &sen_c, &tev_c];
+        assert_eq!(
+            render_roll_up(&p, &all, Profile::Portion),
+            "TS//SAR-QSV-HOL-PER A1 A2-SEN-TEV//NF"
         );
     }
 
@@ -695,7 +764,7 @@ mod tests {
         let both: Vec<&Compartment> = vec![&tev, &sen];
         assert_eq!(
             render_roll_up(&p, &both, Profile::Portion),
-            "TS//TK//SAR-QSV-SEN TEV//NF"
+            "TS//TK//SAR-QSV-SEN-TEV//NF"
         );
         // Standing: program TS, no slices.
         assert_eq!(
