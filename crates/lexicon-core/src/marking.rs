@@ -5,6 +5,7 @@
 //! Display order is CLASSIFICATION // SCI // SAR // AEA // FGI // DISSEM.
 //! SCI is a bare designator (TK, not SCI/TK). SAP is SAR-<pid>[-<compid>].
 
+use crate::error::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fmt;
@@ -270,9 +271,14 @@ impl SciRegister {
         })
     }
 
-    pub fn bundled() -> &'static Self {
+    pub fn bundled() -> crate::error::Result<&'static Self> {
         static R: OnceLock<SciRegister> = OnceLock::new();
-        R.get_or_init(|| Self::from_json(SCI_REGISTER_JSON).expect("sci_register.json"))
+        if let Some(r) = R.get() {
+            return Ok(r);
+        }
+        let parsed = Self::from_json(SCI_REGISTER_JSON)
+            .map_err(|e| Error::Parse(format!("sci_register.json: {e}")))?;
+        Ok(R.get_or_init(|| parsed))
     }
 
     pub fn is_sci(&self, designator: &str) -> bool {
@@ -549,7 +555,10 @@ impl Marking {
         let segs: Vec<&str> = s.split("//").collect();
         let level = Level::parse(segs[0])
             .ok_or_else(|| format!("unknown classification level '{}'", segs[0]))?;
-        let kind_sci = sci.unwrap_or(SciRegister::bundled());
+        let kind_sci = match sci {
+            Some(s) => s,
+            None => SciRegister::bundled().map_err(|e| e.to_string())?,
+        };
         let mut caveats = Vec::new();
         let mut compartments = Vec::new();
         let mut last_slot = Slot::Sci;
@@ -609,7 +618,11 @@ impl std::str::FromStr for Marking {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::parse_with(s, SciRegister::bundled(), CountryRegister::bundled())
+        Self::parse_with(
+            s,
+            SciRegister::bundled().map_err(|e| e.to_string())?,
+            CountryRegister::bundled(),
+        )
     }
 }
 
@@ -937,7 +950,7 @@ mod tests {
                 designator: String::new(),
             }],
         }
-        .validate(SciRegister::bundled())
+        .validate(SciRegister::bundled().unwrap())
         .unwrap_err();
         assert!(err.contains("bare SCI"), "{err}");
     }
@@ -975,7 +988,7 @@ mod tests {
         );
         assert_eq!(m.to_string(), "TS//TK//SAR-QSV-HOL//NF");
         assert_eq!(m.display_banner(), "TOP SECRET//TK//SAR-QSV-HOL//NOFORN");
-        assert!(m.validate(SciRegister::bundled()).is_ok());
+        assert!(m.validate(SciRegister::bundled().unwrap()).is_ok());
         let err = "TS//SAR-QSV/HOL".parse::<Marking>().unwrap_err();
         assert!(err.contains("hyphen"), "{err}");
         let legacy: Marking = "TS//SAP/QSV".parse().unwrap();
@@ -999,7 +1012,7 @@ mod tests {
                 designator: "QSV/HOL".into(),
             }],
         };
-        let err = m.validate(SciRegister::bundled()).unwrap_err();
+        let err = m.validate(SciRegister::bundled().unwrap()).unwrap_err();
         assert!(err.contains("hyphen"), "{err}");
     }
 
@@ -1023,7 +1036,7 @@ mod tests {
 
     #[test]
     fn bundled_registers_cover_samples() {
-        let sci = SciRegister::bundled();
+        let sci = SciRegister::bundled().unwrap();
         assert!(sci.allows(&CompartmentKind::Sci, "TK"));
         assert!(sci.allows(&CompartmentKind::Sci, "HCS"));
         assert!(!sci.allows(&CompartmentKind::Sci, "ZZZZ"));

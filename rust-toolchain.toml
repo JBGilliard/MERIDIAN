@@ -1,0 +1,4 @@
+# Matches workspace rust-version. rustup profile "default" = rustc, rust-std, cargo, rust-docs.
+[toolchain]
+channel = "1.85.0"
+profile = "default"

@@ -6,11 +6,11 @@ use lexicon_core::marking::{Level, Marking};
 use lexicon_core::mint::{verify_mint, MintRequest, Minter};
 use lexicon_core::pool::PoolWord;
 use lexicon_core::program::{
-    derive_marking, render_marking, roll_up_marking, Compartment, Control, ControlKind, Program,
-    Profile, SapType,
+    derive_marking, render_marking, roll_up_marking, Compartment, Control, ControlKind, Profile,
+    Program, SapType,
 };
 use lexicon_core::types::{normalize, NameType};
-use lexicon_core::{Authority, Error, Signer};
+use lexicon_core::{Authority, Error, Policy, PolicyOverrides, Signer};
 use lexicon_pools::bundled;
 use std::fs;
 use std::io::Write;
@@ -18,20 +18,45 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 mod identity;
+mod input_files;
 mod steward;
 mod ui;
 use identity::session_attribution;
+use input_files::{merge_controls, mint_marking, pick_opt, resolve, ResolvedInputs};
 use ui::Ui;
+
+const CLI_BANNER: &str = "\
+NOT NICKA — official name assignment remains NICKA.
+
+MERIDIAN-lexicon is an open-source local naming registry reference
+implementation. It is not an IC enterprise service or system of record.
+
+Ledger: names.sqlite (unclassified, always) + bindings.sqlite
+(classified, optional, policy-gated via policy.toml).
+
+Export defaults to the names chain only; --bindings and attribution
+require explicit flags and policy.toml permission.
+
+Prefer --marking-file / --binding-file on high side; --classification is argv-audited.
+
+Data dir: OSS default .meridian in cwd; highside builds require
+--data-dir and policy.toml (no implicit cwd path).
+";
 
 #[derive(Parser)]
 #[command(
     name = "lexicon",
-    about = "meridian-lexicon: mint, verify, and lint un-guessable names",
+    about = "Local naming registry: mint, verify, and lint un-guessable names",
+    long_about = "Local naming registry: mint, verify, and lint un-guessable names.\n\n\
+NOT NICKA — official name assignment remains NICKA. Reference implementation\n\
+only; not an IC enterprise service or system of record.",
+    before_help = CLI_BANNER,
     version
 )]
 struct Cli {
-    #[arg(long, global = true, default_value = ".meridian")]
-    data_dir: PathBuf,
+    /// Ledger and keys. OSS default `.meridian`. Highside builds require an explicit path.
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
     /// Source data dir for steward CRUD (agencies.json, reject lists).
     #[arg(long, global = true, default_value = "crates/lexicon-pools/data")]
     source_dir: PathBuf,
@@ -39,11 +64,24 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
     /// Classification banner baked into export/mint artifacts (e.g. "CUI", "SECRET//NOFORN").
+    /// Argv-audited; prefer `--marking-file` on high side.
     #[arg(long, global = true)]
     classification: Option<String>,
+    /// Classification marking from JSON or TOML (`marking` field). Preferred on high side.
+    #[arg(long, global = true, value_name = "PATH")]
+    marking_file: Option<PathBuf>,
+    /// Classified binding from JSON or TOML: marking, program_pid, compartment_id, controls.
+    #[arg(long, global = true, value_name = "PATH")]
+    binding_file: Option<PathBuf>,
     /// Refuse to run unless the FIPS 140-3 boundary is active (requires `--features fips`).
     #[arg(long, global = true)]
     approved_mode: bool,
+    /// Persist classification markings. Argv cannot enable this if policy.toml forbids it.
+    #[arg(long, global = true)]
+    persist_markings: bool,
+    /// Collect OS-session attribution and include it on lookup/history/export. Policy must allow it.
+    #[arg(long, global = true)]
+    include_attribution: bool,
     /// Test harness only. Honor LEXICON_USER / LEXICON_HOST. Stripped from release.
     #[cfg(debug_assertions)]
     #[arg(long, global = true, hide = true)]
@@ -59,7 +97,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: KeyCmd,
     },
-    /// Mint a name (VRF + lint + uniqueness ledger)
+    /// Mint a name (VRF + lint + uniqueness ledger). `--seed` prints
+    /// candidates and does not open the ledger.
     Mint {
         #[arg(long, value_enum)]
         r#type: TypeArg,
@@ -75,6 +114,9 @@ enum Cmd {
         /// Bind to a compartment of `--program`.
         #[arg(long)]
         compartment: Option<String>,
+        /// 32-byte VRF seed (64 hex chars). Prints candidates; writes nothing.
+        #[arg(long, value_name = "HEX")]
+        seed: Option<String>,
     },
     /// SAP program object model (create, compartments, controls)
     Program {
@@ -294,16 +336,21 @@ enum LedgerCmd {
         #[arg(long)]
         marking: Option<String>,
     },
-    /// Dump the full event log as JSON lines for offline audit.
+    /// Dump the unclassified names chain as JSON lines. `--bindings` writes a second classified file.
     Export {
         #[arg(long)]
         file: PathBuf,
+        /// Also write classified bindings next to `--file`. Requires policy.allow_export_bindings.
+        #[arg(long)]
+        bindings: bool,
     },
     /// Verify chain integrity + every event signature against a public key.
     Audit {
         #[arg(long, num_args = 1.., help = "public key(s); one for single-signer events, two for two-person control")]
         public_key: Vec<String>,
     },
+    /// Combined ledger.sqlite is not converted. Quarantine it and start clean.
+    Migrate,
 }
 
 #[derive(Subcommand)]
@@ -431,17 +478,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         lexicon_core::init()?;
     }
+    let inputs = resolve(
+        cli.marking_file.as_deref(),
+        cli.binding_file.as_deref(),
+        cli.classification.as_deref(),
+    )?;
+    let ui = Ui::new(cli.json);
+    if matches!(&cli.cmd, Cmd::Mint { seed: Some(_), .. }) {
+        mint_from_seed(&cli, &inputs, &ui)?;
+        return Ok(());
+    }
+    let data_dir = resolve_data_dir(cli.data_dir.as_deref())?;
+    let policy = Policy::from_data_dir(&data_dir)?.tighten(&PolicyOverrides {
+        persist_markings: cli.persist_markings,
+        include_attribution: cli.include_attribution,
+    })?;
     #[cfg(debug_assertions)]
     let allow_env_identity = cli.allow_env_identity;
     #[cfg(not(debug_assertions))]
     let allow_env_identity = false;
-    let ui = Ui::new(cli.json);
     match cli.cmd {
         Cmd::Key { cmd } => match cmd {
             KeyCmd::Generate { agency } => {
                 let agency = agency.to_ascii_uppercase();
                 let _ = bundled().agency(&agency)?;
-                let keys = keys_dir(&cli.data_dir);
+                let keys = keys_dir(&data_dir);
                 if keys.join(format!("{agency}.sk")).exists() {
                     return Err(format!("key already exists for {agency}").into());
                 }
@@ -458,8 +519,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             KeyCmd::Inspect { agency } => {
                 let agency = agency.to_ascii_uppercase();
-                let keys = keys_dir(&cli.data_dir);
-                let auth = load_auth(&cli.data_dir, &agency)?;
+                let keys = keys_dir(&data_dir);
+                let auth = load_auth(&data_dir, &agency)?;
                 let pk = hex::encode(auth.public_key());
                 if ui.is_json() {
                     ui.json(&serde_json::json!({
@@ -484,7 +545,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 reason,
             } => {
                 let agency = agency.to_ascii_uppercase();
-                let old = load_auth(&cli.data_dir, &agency)?;
+                let old = load_auth(&data_dir, &agency)?;
                 let new = Authority::generate(&agency);
                 let kind = EventKind::KeyRotated {
                     authority_id: agency.clone(),
@@ -493,12 +554,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     new_alg: new.alg(),
                 };
                 let mut event = Event::new(kind);
-                event.attribution = session_attribution(allow_env_identity)?;
-                let canonical = event.canonical_bytes();
-                let mut led = open_ledger(&cli.data_dir)?;
+                event.attribution =
+                    session_attribution(policy.allow_attribution, allow_env_identity)?;
+                let canonical = event.canonical_u_bytes();
+                let mut led = open_ledger(&data_dir, &policy)?;
                 let seq = if let Some(co) = &co_author {
                     let co_agency = co.to_ascii_uppercase();
-                    let co_auth = load_auth(&cli.data_dir, &co_agency)?;
+                    let co_auth = load_auth(&data_dir, &co_agency)?;
                     let sig = lexicon_core::Signature::join(vec![
                         old.sign(&canonical),
                         co_auth.sign(&canonical),
@@ -510,7 +572,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 // Persist the new seed only after the rotation event is on the
                 // ledger. A crash here leaves the old key active and the
                 // rotation unrecorded — recoverable, no split-brain.
-                new.save(&keys_dir(&cli.data_dir))?;
+                new.save(&keys_dir(&data_dir))?;
                 if ui.is_json() {
                     ui.json(&serde_json::json!({
                         "agency": agency,
@@ -533,6 +595,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         },
+        Cmd::Mint { seed: Some(_), .. } => unreachable!("seed mint handled before ledger open"),
         Cmd::Mint {
             r#type,
             agency,
@@ -540,23 +603,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             max_attempts,
             program,
             compartment,
+            seed: None,
         } => {
             let agency = agency.to_ascii_uppercase();
-            let auth = load_auth(&cli.data_dir, &agency)?;
+            let auth = load_auth(&data_dir, &agency)?;
             let pools = bundled();
             let linter = lexicon_pools::bundled_linter();
-            let mut ledger = open_ledger(&cli.data_dir)?;
+            let mut ledger = open_ledger(&data_dir, &policy)?;
             let mut minter = Minter::new(&auth, pools, &linter, &mut ledger);
-            let marking = match &cli.classification {
-                Some(c) => c
-                    .parse::<Marking>()
-                    .map_err(|e| format!("bad classification: {e}"))?,
-                None => Marking::default(),
-            };
+            let marking = mint_marking(&inputs);
             for w in marking.warnings() {
                 eprintln!("warning: {w}");
             }
-            let attribution = session_attribution(allow_env_identity)?;
+            let attribution = session_attribution(policy.allow_attribution, allow_env_identity)?;
+            let program_pid = pick_opt(
+                inputs
+                    .binding
+                    .as_ref()
+                    .and_then(|b| b.program_pid.as_deref()),
+                program.as_deref(),
+            );
+            let compartment_id = pick_opt(
+                inputs
+                    .binding
+                    .as_ref()
+                    .and_then(|b| b.compartment_id.as_deref()),
+                compartment.as_deref(),
+            );
+            if compartment_id.is_some() && program_pid.is_none() {
+                return Err(Error::Parse("compartment_id requires program_pid".into()).into());
+            }
             let minted = minter.mint(MintRequest {
                 name_type: r#type.into(),
                 pool_id: pools.id.clone(),
@@ -564,19 +640,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 digraph,
                 marking,
                 attribution,
-                program_pid: program.clone(),
-                compartment_id: compartment.clone(),
+                program_pid: program_pid.clone(),
+                compartment_id: compartment_id.clone(),
             })?;
             if ui.is_json() {
                 let mut v = serde_json::to_value(&minted)?;
                 let obj = v.as_object_mut().unwrap();
-                if let Some(c) = &cli.classification {
-                    obj.insert("classification".into(), c.clone().into());
+                if let Some(m) = &inputs.floor {
+                    obj.insert("classification".into(), m.display_banner().into());
                 }
-                if let Some(p) = &program {
+                if let Some(p) = &program_pid {
                     obj.insert("program".into(), p.to_ascii_uppercase().into());
                 }
-                if let Some(c) = &compartment {
+                if let Some(c) = &compartment_id {
                     obj.insert("compartment".into(), c.to_ascii_uppercase().into());
                 }
                 ui.json(&v);
@@ -587,10 +663,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ui.kv("sequence", &minted.sequence.to_string());
                 ui.kv("nonce", &minted.nonce.to_string());
                 ui.kv("marking", &ui::portion(&minted.marking));
-                if let Some(p) = &program {
+                if let Some(p) = &program_pid {
                     ui.kv("program", &p.to_ascii_uppercase());
                 }
-                if let Some(c) = &compartment {
+                if let Some(c) = &compartment_id {
                     ui.kv("compartment", &c.to_ascii_uppercase());
                 }
             }
@@ -600,7 +676,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let minted: lexicon_core::MintedName = serde_json::from_str(&raw)?;
             let pools = bundled();
             if ledger {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 lexicon_core::verify_issued(&minted, pools, &led)?;
             } else {
                 verify_mint(&minted, pools)?;
@@ -639,7 +715,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         Cmd::Ledger { cmd } => match cmd {
             LedgerCmd::Verify => {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 led.verify_chain()?;
                 let events = led.len()?;
                 let root = hex::encode(led.root()?);
@@ -660,12 +736,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             LedgerCmd::Root { sign, agency } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 if sign {
                     let agency = agency
                         .ok_or(" --agency required with --sign")?
                         .to_ascii_uppercase();
-                    let auth = load_auth(&cli.data_dir, &agency)?;
+                    let auth = load_auth(&data_dir, &agency)?;
                     let snap = led.sign_root(&auth)?;
                     if ui.is_json() {
                         ui.json(&snap);
@@ -687,7 +763,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             LedgerCmd::Names { marking } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let show_attr = attribution_visible(&policy, cli.include_attribution)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 let mut recs: Vec<_> = led
                     .name_records()?
                     .into_iter()
@@ -697,10 +774,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let want: Marking = m.parse().map_err(|e| format!("bad --marking: {e}"))?;
                     recs.retain(|r| Marking::from_stored(&r.marking).is_ok_and(|rm| rm == want));
                 }
+                redact_attributions(&mut recs, show_attr);
                 if ui.is_json() {
                     ui.json(&recs);
                 } else {
-                    let pm = page_marking(&recs, cli.classification.as_deref());
+                    let pm = page_marking(&recs, inputs.floor.as_ref());
                     ui.banner_top(&pm);
                     ui.heading(&format!("{} issued names", recs.len()));
                     for r in &recs {
@@ -714,16 +792,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             LedgerCmd::Lookup { name } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let show_attr = attribution_visible(&policy, cli.include_attribution)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 match led.lookup(&name)? {
-                    Some(r) => {
+                    Some(mut r) => {
+                        if !show_attr {
+                            r.attribution.clear();
+                        }
                         if ui.is_json() {
                             ui.json(&r);
                         } else {
-                            let pm = page_marking(
-                                std::slice::from_ref(&r),
-                                cli.classification.as_deref(),
-                            );
+                            let pm = page_marking(std::slice::from_ref(&r), inputs.floor.as_ref());
                             ui.banner_top(&pm);
                             ui.status(r.status == "issued", &r.display);
                             ui.kv("status", &r.status);
@@ -736,7 +815,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             if let Some(cid) = &r.compartment_id {
                                 ui.kv("compartment", cid);
                             }
-                            ui.kv("user", &r.attribution);
+                            if !r.attribution.is_empty() {
+                                ui.kv("user", &r.attribution);
+                            }
                             ui.kv("seq", &r.event_seq.to_string());
                             ui.kv("at", &r.created_at);
                             ui.banner_bottom(&pm);
@@ -759,7 +840,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 status,
                 marking,
             } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let show_attr = attribution_visible(&policy, cli.include_attribution)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 let mut recs = led.name_records()?;
                 if let Some(a) = &agency {
                     recs.retain(|r| r.authority_id.eq_ignore_ascii_case(a));
@@ -777,76 +859,75 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let want: Marking = m.parse().map_err(|e| format!("bad --marking: {e}"))?;
                     recs.retain(|r| Marking::from_stored(&r.marking).is_ok_and(|rm| rm == want));
                 }
+                redact_attributions(&mut recs, show_attr);
                 if ui.is_json() {
                     ui.json(&recs);
                 } else {
-                    let pm = page_marking(&recs, cli.classification.as_deref());
+                    let pm = page_marking(&recs, inputs.floor.as_ref());
                     ui.banner_top(&pm);
                     ui.heading(&format!("{} names", recs.len()));
                     for r in &recs {
+                        let attr = if r.attribution.is_empty() {
+                            String::new()
+                        } else {
+                            format!("  @{}", r.attribution)
+                        };
                         ui.line(&format!(
-                            "  {:<6} {:<14} {:<5} {}  {}  @{}",
+                            "  {:<6} {:<14} {:<5} {}  {}{}",
                             r.status,
                             r.display,
                             r.authority_id,
                             ui::portion_of_stored(&r.marking),
                             r.created_at,
-                            r.attribution
+                            attr
                         ));
                     }
                     ui.banner_bottom(&pm);
                 }
             }
-            LedgerCmd::Export { file } => {
-                let led = open_ledger(&cli.data_dir)?;
-                let rows = led.event_rows()?;
-                // Container marking = max of exported event markings,
-                // floored by --classification.
-                let mut agg = Marking::default();
-                for r in &rows {
-                    if let Some(m) = r.marking.as_deref() {
-                        if let Ok(parsed) = Marking::from_stored(m) {
-                            agg = agg.max(&parsed);
-                        }
+            LedgerCmd::Export { file, bindings } => {
+                let show_attr = attribution_visible(&policy, cli.include_attribution)?;
+                let want_bindings = bindings_export_allowed(&policy, bindings)?;
+                let mut led = open_ledger(&data_dir, &policy)?;
+                let names = led.name_rows()?;
+                let names_marking = names_export_marking(inputs.floor.as_ref());
+                let names_banner = (!names.is_empty() || inputs.floor.is_some())
+                    .then(|| export_banner_json(&names_marking));
+                write_jsonl(&file, names_banner.as_ref(), &names)?;
+
+                if want_bindings {
+                    if file == Path::new("-") {
+                        return Err("--bindings cannot write to stdout; pass --file <path>".into());
                     }
-                }
-                if let Some(c) = &cli.classification {
-                    if let Ok(fm) = c.parse::<Marking>() {
-                        agg = agg.max(&fm);
-                    }
-                }
-                let banner = (!rows.is_empty() || cli.classification.is_some()).then(|| {
-                    serde_json::json!({
-                        "_banner": true,
-                        "classification": agg.to_string(),
-                        "generated_at": lexicon_core::events::now_rfc3339(),
-                    })
-                });
-                if file == Path::new("-") {
-                    if let Some(b) = &banner {
-                        let _ = writeln!(std::io::stdout(), "{b}");
-                    }
-                    for r in &rows {
-                        let _ = writeln!(std::io::stdout(), "{}", serde_json::to_string(r)?);
-                    }
-                } else {
-                    let mut f = std::fs::File::create(&file)?;
-                    if let Some(b) = &banner {
-                        let _ = writeln!(f, "{b}");
-                    }
-                    for r in &rows {
-                        let _ = writeln!(f, "{}", serde_json::to_string(r)?);
-                    }
+                    led.attach_bindings_read(&data_dir)?;
+                    let mut brows = led.binding_rows()?;
+                    redact_binding_export(&mut brows, show_attr);
+                    let bind_marking =
+                        bindings_export_marking(&led, &policy, inputs.floor.as_ref())?;
+                    let bind_banner = export_banner_json(&bind_marking);
+                    let bpath = bindings_sidecar(&file);
+                    write_jsonl(&bpath, Some(&bind_banner), &brows)?;
                     if !ui.is_json() {
                         ui.status(
                             true,
-                            &format!("{} events to {}", rows.len(), file.display()),
+                            &format!(
+                                "{} names to {}; {} bindings to {}",
+                                names.len(),
+                                file.display(),
+                                brows.len(),
+                                bpath.display()
+                            ),
                         );
                     }
+                } else if file != Path::new("-") && !ui.is_json() {
+                    ui.status(
+                        true,
+                        &format!("{} names to {}", names.len(), file.display()),
+                    );
                 }
             }
             LedgerCmd::Audit { public_key } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 led.verify_chain()?;
                 let pks: Vec<Vec<u8>> = public_key
                     .iter()
@@ -889,6 +970,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ui.line(
                             "    (a failure may indicate a key rotation; audit with the old key for those seqs)",
                         );
+                }
+            }
+            LedgerCmd::Migrate => {
+                let had_legacy = data_dir.join("ledger.sqlite").exists();
+                Ledger::migrate(&data_dir)?;
+                if ui.is_json() {
+                    ui.json(&serde_json::json!({
+                        "ok": true,
+                        "legacy_quarantined": had_legacy,
+                    }));
+                } else if had_legacy {
+                    ui.status(
+                        true,
+                        "quarantined ledger.sqlite (not converted); start clean",
+                    );
+                } else {
+                    ui.status(true, "no combined ledger.sqlite; nothing to migrate");
                 }
             }
         },
@@ -1054,9 +1152,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let pid = pid.to_ascii_uppercase();
                 let sap_type = SapType::parse(&sap_type)?;
                 let level = Level::parse(&level).ok_or_else(|| format!("bad --level: {level}"))?;
+                let (sci, dissem, aea, fgi) =
+                    merge_controls(inputs.binding.as_ref(), &sci, &dissem, &aea, &fgi);
                 let controls = collect_controls(sci, dissem, aea, fgi);
                 {
-                    let led = open_ledger(&cli.data_dir)?;
+                    let led = open_ledger(&data_dir, &policy)?;
                     for (label, val) in [
                         ("nickname", nickname.as_str()),
                         ("codeword", codeword.as_deref().unwrap_or("")),
@@ -1080,7 +1180,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let marking = derive_marking(&program, None);
                 let seq = append_program_event(
-                    &cli.data_dir,
+                    &data_dir,
+                    &policy,
                     &agency,
                     EventKind::ProgramCreated(program.clone()),
                     allow_env_identity,
@@ -1107,7 +1208,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ProgramCmd::List => {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 let programs = led.programs()?;
                 if ui.is_json() {
                     ui.json(&programs);
@@ -1132,7 +1233,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ProgramCmd::Show { pid } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 match led.program(&pid)? {
                     Some(p) => {
                         let comps = led.compartments(&p.pid)?;
@@ -1169,10 +1270,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                             ui.kv("marking", &ui::portion(&standing));
-                            ui.kv(
-                                "DoD banner",
-                                &render_marking(&p, None, Profile::DoDBanner),
-                            );
+                            ui.kv("DoD banner", &render_marking(&p, None, Profile::DoDBanner));
                             if comps.is_empty() {
                                 ui.line("  (no compartments)");
                             } else {
@@ -1180,10 +1278,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 for c in &comps {
                                     let cm = derive_marking(&p, Some(c));
                                     let sci = control_values(&c.controls, ControlKind::Sci);
-                                    let mut line = format!(
-                                        "  {:<6} {:<16} ",
-                                        c.id, c.nickname,
-                                    );
+                                    let mut line = format!("  {:<6} {:<16} ", c.id, c.nickname,);
                                     if let Some(cw) = &c.codeword {
                                         line.push_str(&format!("cw={cw} "));
                                     }
@@ -1210,7 +1305,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             } else {
                                 ui.heading("exercises");
                                 for r in &exercises {
-                                    ui.line(&format!("  {:<24} {}", r.display, ui::portion_of_stored(&r.marking)));
+                                    ui.line(&format!(
+                                        "  {:<24} {}",
+                                        r.display,
+                                        ui::portion_of_stored(&r.marking)
+                                    ));
                                 }
                             }
                             ui.banner_bottom(&standing);
@@ -1229,7 +1328,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             ProgramCmd::Names { pid } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 let p = require_program(&led, &pid)?;
                 let comps = led.compartments(&p.pid)?;
                 // Steward-assigned names: PID, program nickname, program codeword,
@@ -1247,7 +1346,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ));
                 }
                 for c in &comps {
-                    rows.push((c.nickname.clone(), "compartment nickname".into(), "U".into()));
+                    rows.push((
+                        c.nickname.clone(),
+                        "compartment nickname".into(),
+                        "U".into(),
+                    ));
                     if let Some(cw) = &c.codeword {
                         rows.push((
                             cw.clone(),
@@ -1284,7 +1387,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     level,
                     sci,
                 } => {
-                    let mut led = open_ledger(&cli.data_dir)?;
+                    let mut led = open_ledger(&data_dir, &policy)?;
                     let p = require_program(&led, &program)?;
                     let agency = p.authority_id.clone();
                     let slice_level = level
@@ -1321,8 +1424,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     let marking = derive_marking(&p, Some(&c));
                     let mut event = Event::new(EventKind::CompartmentAdded(c.clone()));
-                    event.attribution = session_attribution(allow_env_identity)?;
-                    let auth = load_auth(&cli.data_dir, &agency)?;
+                    event.attribution =
+                        session_attribution(policy.allow_attribution, allow_env_identity)?;
+                    let auth = load_auth(&data_dir, &agency)?;
                     let seq = led.append(event, &auth)?;
                     if ui.is_json() {
                         ui.json(&serde_json::json!({
@@ -1367,11 +1471,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         fgi,
                     } => (false, program, compartment, sci, dissem, aea, fgi),
                 };
+                let (sci, dissem, aea, fgi) =
+                    merge_controls(inputs.binding.as_ref(), &sci, &dissem, &aea, &fgi);
                 let delta = collect_controls(sci, dissem, aea, fgi);
                 if delta.is_empty() {
                     return Err("need at least one of --sci/--dissem/--aea/--fgi".into());
                 }
-                let mut led = open_ledger(&cli.data_dir)?;
+                let mut led = open_ledger(&data_dir, &policy)?;
                 let p = require_program(&led, &program)?;
                 if let Some(cid) = &compartment {
                     if led.compartment(&p.pid, cid)?.is_none() {
@@ -1395,8 +1501,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     add: add_v,
                     remove: remove_v,
                 });
-                event.attribution = session_attribution(allow_env_identity)?;
-                let auth = load_auth(&cli.data_dir, &agency)?;
+                event.attribution =
+                    session_attribution(policy.allow_attribution, allow_env_identity)?;
+                let auth = load_auth(&data_dir, &agency)?;
                 let seq = led.append(event, &auth)?;
                 if ui.is_json() {
                     ui.json(&serde_json::json!({
@@ -1420,7 +1527,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 slices,
                 profile,
             } => {
-                let led = open_ledger(&cli.data_dir)?;
+                let led = open_ledger(&data_dir, &policy)?;
                 let p = require_program(&led, &pid)?;
                 let all = led.compartments(&p.pid)?;
                 let mut selected: Vec<&Compartment> = Vec::new();
@@ -1429,11 +1536,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     match all.iter().find(|c| c.id == sid) {
                         Some(c) => selected.push(c),
                         None => {
-                            return Err(format!(
-                                "unknown slice {sid} on program {}",
-                                p.pid
-                            )
-                            .into());
+                            return Err(format!("unknown slice {sid} on program {}", p.pid).into());
                         }
                     }
                 }
@@ -1471,7 +1574,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ui.kv("program", &p.pid);
                     ui.kv(
                         "slices",
-                        &selected.iter().map(|c| c.id.clone()).collect::<Vec<_>>().join(","),
+                        &selected
+                            .iter()
+                            .map(|c| c.id.clone())
+                            .collect::<Vec<_>>()
+                            .join(","),
                     );
                     ui.kv("banner", &banner);
                     ui.kv("rollup", &rollup);
@@ -1490,8 +1597,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 reason,
                 authority_id: agency.clone(),
             });
-            event.attribution = session_attribution(allow_env_identity)?;
-            append_lifecycle(&ui, &cli.data_dir, &agency, event, None)?;
+            event.attribution = session_attribution(policy.allow_attribution, allow_env_identity)?;
+            append_lifecycle(&ui, &data_dir, &policy, &agency, event, None)?;
         }
         Cmd::Revoke {
             name,
@@ -1505,8 +1612,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 reason,
                 authority_id: agency.clone(),
             });
-            event.attribution = session_attribution(allow_env_identity)?;
-            append_lifecycle(&ui, &cli.data_dir, &agency, event, co_author.as_deref())?;
+            event.attribution = session_attribution(policy.allow_attribution, allow_env_identity)?;
+            append_lifecycle(
+                &ui,
+                &data_dir,
+                &policy,
+                &agency,
+                event,
+                co_author.as_deref(),
+            )?;
         }
     }
     Ok(())
@@ -1515,18 +1629,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 fn append_lifecycle(
     ui: &Ui,
     data: &Path,
+    policy: &Policy,
     agency: &str,
     event: Event,
     co_author: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let auth = load_auth(data, agency)?;
-    let mut led = open_ledger(data)?;
+    let mut led = open_ledger(data, policy)?;
     let verb = event.kind.type_name();
     let norm = match &event.kind {
         EventKind::Retired { name, .. } | EventKind::Revoked { name, .. } => normalize(name),
         _ => return Err("append_lifecycle: not a retire/revoke event".into()),
     };
-    let canonical = event.canonical_bytes();
+    let canonical = event.canonical_u_bytes();
     let seq = if let Some(co) = co_author {
         let co_agency = co.to_ascii_uppercase();
         let co_auth = load_auth(data, &co_agency)?;
@@ -1551,14 +1666,113 @@ fn append_lifecycle(
     Ok(())
 }
 
+fn resolve_data_dir(explicit: Option<&Path>) -> Result<PathBuf, Error> {
+    match explicit {
+        Some(p) => Ok(p.to_path_buf()),
+        None => {
+            #[cfg(feature = "highside")]
+            {
+                Err(Error::ImplicitDataDir)
+            }
+            #[cfg(not(feature = "highside"))]
+            {
+                Ok(PathBuf::from(".meridian"))
+            }
+        }
+    }
+}
+
 fn keys_dir(data: &Path) -> PathBuf {
     data.join("keys")
 }
 fn load_auth(data: &Path, agency: &str) -> Result<Authority, Error> {
     Authority::load(&keys_dir(data), agency)
 }
-fn open_ledger(data: &Path) -> Result<Ledger, Error> {
-    Ledger::open(&data.join("ledger.sqlite"))
+fn open_ledger(data: &Path, policy: &Policy) -> Result<Ledger, Error> {
+    Ledger::open(data, policy)
+}
+
+fn parse_vrf_seed(hex_str: &str) -> Result<[u8; 32], Error> {
+    let raw = hex::decode(hex_str.trim()).map_err(|e| Error::Key(format!("decode seed: {e}")))?;
+    raw.try_into()
+        .map_err(|_| Error::Key("seed must be 32 bytes".into()))
+}
+
+fn mint_from_seed(
+    cli: &Cli,
+    inputs: &ResolvedInputs,
+    ui: &Ui,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Cmd::Mint {
+        seed: Some(seed_hex),
+        r#type,
+        agency,
+        digraph,
+        max_attempts,
+        program,
+        compartment,
+    } = &cli.cmd
+    else {
+        unreachable!("seed mint");
+    };
+    let seed = parse_vrf_seed(seed_hex)?;
+    let pools = bundled();
+    let linter = lexicon_pools::bundled_linter();
+    let marking = mint_marking(inputs);
+    for w in marking.warnings() {
+        eprintln!("warning: {w}");
+    }
+    let program_pid = pick_opt(
+        inputs
+            .binding
+            .as_ref()
+            .and_then(|b| b.program_pid.as_deref()),
+        program.as_deref(),
+    );
+    let compartment_id = pick_opt(
+        inputs
+            .binding
+            .as_ref()
+            .and_then(|b| b.compartment_id.as_deref()),
+        compartment.as_deref(),
+    );
+    if compartment_id.is_some() && program_pid.is_none() {
+        return Err(Error::Parse("compartment_id requires program_pid".into()).into());
+    }
+    let agency = agency.to_ascii_uppercase();
+    let candidates = Minter::mint_dry_run(
+        &seed,
+        &agency,
+        pools,
+        &linter,
+        MintRequest {
+            name_type: (*r#type).into(),
+            pool_id: pools.id.clone(),
+            max_attempts: *max_attempts,
+            digraph: digraph.clone(),
+            marking,
+            attribution: Default::default(),
+            program_pid,
+            compartment_id,
+        },
+    )?;
+    if ui.is_json() {
+        ui.json(&serde_json::json!({
+            "dry_run": true,
+            "candidates": candidates,
+        }));
+    } else {
+        ui.heading("candidates (not issued)");
+        ui.kv("type", NameType::from(*r#type).as_str());
+        ui.kv("agency", &agency);
+        ui.names(
+            &candidates
+                .iter()
+                .map(|m| m.name.clone())
+                .collect::<Vec<_>>(),
+        );
+    }
+    Ok(())
 }
 
 fn sample(words: &[String]) -> String {
@@ -1604,30 +1818,139 @@ fn require_program(led: &Ledger, pid: &str) -> Result<Program, Box<dyn std::erro
 
 fn append_program_event(
     data: &Path,
+    policy: &Policy,
     agency: &str,
     kind: EventKind,
     allow_env_identity: bool,
 ) -> Result<u64, Box<dyn std::error::Error>> {
     let mut event = Event::new(kind);
-    event.attribution = session_attribution(allow_env_identity)?;
+    event.attribution = session_attribution(policy.allow_attribution, allow_env_identity)?;
     let auth = load_auth(data, agency)?;
-    let mut led = open_ledger(data)?;
+    let mut led = open_ledger(data, policy)?;
     Ok(led.append(event, &auth)?)
 }
 
-/// Page marking = max(displayed content), floored by `--classification`.
+/// `--include-attribution` without policy.allow_export_attribution is an error, not a silent omit.
+fn attribution_visible(policy: &Policy, requested: bool) -> Result<bool, Error> {
+    if requested && !policy.allow_export_attribution {
+        return Err(Error::PolicyViolation(
+            "--include-attribution is not allowed by policy.toml".into(),
+        ));
+    }
+    Ok(requested && policy.allow_export_attribution)
+}
+
+/// `--bindings` without policy.allow_export_bindings is an error, not a silent omit.
+fn bindings_export_allowed(policy: &Policy, requested: bool) -> Result<bool, Error> {
+    if requested && !policy.allow_export_bindings {
+        return Err(Error::PolicyViolation(
+            "--bindings is not allowed by policy.toml".into(),
+        ));
+    }
+    Ok(requested && policy.allow_export_bindings)
+}
+
+fn redact_attributions(recs: &mut [lexicon_core::NameRecord], show: bool) {
+    if !show {
+        for r in recs {
+            r.attribution.clear();
+        }
+    }
+}
+
+fn redact_binding_export(rows: &mut [lexicon_core::BindingRow], show_attr: bool) {
+    if !show_attr {
+        for r in rows {
+            r.attribution.clear();
+        }
+    }
+}
+
+fn names_export_marking(floor: Option<&Marking>) -> Marking {
+    floor.cloned().unwrap_or_default()
+}
+
+fn bindings_export_marking(
+    led: &Ledger,
+    policy: &Policy,
+    floor: Option<&Marking>,
+) -> Result<Marking, Error> {
+    let mut agg = led.aggregate_marking()?;
+    if let Some(fm) = floor {
+        agg = agg.max(fm);
+    }
+    if let Ok(req) = policy.required_banner.parse::<Marking>() {
+        agg = agg.max(&req);
+    }
+    Ok(agg)
+}
+
+fn export_banner_json(m: &Marking) -> serde_json::Value {
+    serde_json::json!({
+        "_banner": true,
+        "classification": m.display_banner(),
+        "generated_at": lexicon_core::events::now_rfc3339(),
+    })
+}
+
+/// `audit.jsonl` → `audit.bindings.jsonl`
+fn bindings_sidecar(names_file: &Path) -> PathBuf {
+    let stem = names_file
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "export".into());
+    let name = match names_file.extension() {
+        Some(ext) => format!("{stem}.bindings.{}", ext.to_string_lossy()),
+        None => format!("{stem}.bindings"),
+    };
+    match names_file.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.join(name),
+        _ => PathBuf::from(name),
+    }
+}
+
+fn write_jsonl<T: serde::Serialize>(
+    dest: &Path,
+    banner: Option<&serde_json::Value>,
+    rows: &[T],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if dest == Path::new("-") {
+        let stdout = std::io::stdout();
+        let mut w = stdout.lock();
+        write_jsonl_to(&mut w, banner, rows)?;
+    } else {
+        let mut f = std::fs::File::create(dest)?;
+        write_jsonl_to(&mut f, banner, rows)?;
+    }
+    Ok(())
+}
+
+fn write_jsonl_to<W: Write, T: serde::Serialize>(
+    w: &mut W,
+    banner: Option<&serde_json::Value>,
+    rows: &[T],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(b) = banner {
+        writeln!(w, "{b}")?;
+    }
+    for r in rows {
+        writeln!(w, "{}", serde_json::to_string(r)?)?;
+    }
+    Ok(())
+}
+
+/// Page marking = max(displayed content), floored by resolved classification.
 /// The banner is the aggregate of what's on the page, not the flag.
-fn page_marking(recs: &[lexicon_core::NameRecord], floor: Option<&str>) -> Marking {
+fn page_marking(recs: &[lexicon_core::NameRecord], floor: Option<&Marking>) -> Marking {
     let mut agg = Marking::default();
     for r in recs {
         if let Ok(m) = Marking::from_stored(&r.marking) {
             agg = agg.max(&m);
         }
     }
-    if let Some(f) = floor {
-        if let Ok(fm) = f.parse::<Marking>() {
-            agg = agg.max(&fm);
-        }
+    if let Some(fm) = floor {
+        agg = agg.max(fm);
     }
     agg
 }
@@ -1678,6 +2001,233 @@ mod tests {
     }
 
     #[test]
+    fn ledger_migrate_parses() {
+        let cli = Cli::try_parse_from(["lexicon", "ledger", "migrate"]).unwrap();
+        assert!(matches!(
+            cli.cmd,
+            Cmd::Ledger {
+                cmd: LedgerCmd::Migrate
+            }
+        ));
+    }
+
+    #[test]
+    fn data_dir_optional_at_parse() {
+        let cli = Cli::try_parse_from(["lexicon", "check", "--name", "X"]).unwrap();
+        assert!(cli.data_dir.is_none());
+        assert!(!cli.persist_markings);
+        assert!(!cli.include_attribution);
+    }
+
+    #[test]
+    fn data_dir_and_policy_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "lexicon",
+            "--data-dir",
+            "/var/lexicon",
+            "--persist-markings",
+            "--include-attribution",
+            "check",
+            "--name",
+            "X",
+        ])
+        .unwrap();
+        assert_eq!(cli.data_dir.as_deref(), Some(Path::new("/var/lexicon")));
+        assert!(cli.persist_markings);
+        assert!(cli.include_attribution);
+    }
+
+    #[test]
+    fn attribution_hidden_without_flag() {
+        let oss = Policy::default_oss();
+        assert!(!attribution_visible(&oss, false).unwrap());
+        assert!(matches!(
+            attribution_visible(&oss, true),
+            Err(Error::PolicyViolation(_))
+        ));
+
+        let mut allowed = Policy::default_oss();
+        allowed.allow_export_attribution = true;
+        assert!(!attribution_visible(&allowed, false).unwrap());
+        assert!(attribution_visible(&allowed, true).unwrap());
+    }
+
+    #[test]
+    fn redact_clears_attribution() {
+        let rec = || lexicon_core::NameRecord {
+            display: "OXIDE".into(),
+            normalized: "OXIDE".into(),
+            status: "issued".into(),
+            name_type: "NICKNAME".into(),
+            authority_id: "DIA".into(),
+            event_seq: 1,
+            created_at: String::new(),
+            marking: "U".into(),
+            attribution: "jdoe@ws001".into(),
+            program_pid: None,
+            compartment_id: None,
+        };
+        let mut keep = [rec()];
+        redact_attributions(&mut keep, true);
+        assert_eq!(keep[0].attribution, "jdoe@ws001");
+        let mut hide = [rec()];
+        redact_attributions(&mut hide, false);
+        assert!(hide[0].attribution.is_empty());
+    }
+
+    #[test]
+    fn export_default_is_names_only() {
+        let cli =
+            Cli::try_parse_from(["lexicon", "ledger", "export", "--file", "audit.jsonl"]).unwrap();
+        match cli.cmd {
+            Cmd::Ledger {
+                cmd: LedgerCmd::Export { file, bindings },
+            } => {
+                assert_eq!(file, PathBuf::from("audit.jsonl"));
+                assert!(!bindings);
+            }
+            _ => panic!("expected export"),
+        }
+    }
+
+    #[test]
+    fn export_bindings_flag_parses() {
+        let cli = Cli::try_parse_from([
+            "lexicon",
+            "ledger",
+            "export",
+            "--file",
+            "audit.jsonl",
+            "--bindings",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Ledger {
+                cmd: LedgerCmd::Export { bindings, .. },
+            } => assert!(bindings),
+            _ => panic!("expected export"),
+        }
+    }
+
+    #[test]
+    fn bindings_export_gate() {
+        let oss = Policy::default_oss();
+        assert!(!bindings_export_allowed(&oss, false).unwrap());
+        assert!(matches!(
+            bindings_export_allowed(&oss, true),
+            Err(Error::PolicyViolation(_))
+        ));
+
+        let mut allowed = Policy::default_oss();
+        allowed.allow_export_bindings = true;
+        assert!(!bindings_export_allowed(&allowed, false).unwrap());
+        assert!(bindings_export_allowed(&allowed, true).unwrap());
+    }
+
+    #[test]
+    fn bindings_sidecar_inserts_before_extension() {
+        assert_eq!(
+            bindings_sidecar(Path::new("audit.jsonl")),
+            PathBuf::from("audit.bindings.jsonl")
+        );
+        assert_eq!(
+            bindings_sidecar(Path::new("/var/out/audit.jsonl")),
+            PathBuf::from("/var/out/audit.bindings.jsonl")
+        );
+        assert_eq!(
+            bindings_sidecar(Path::new("audit")),
+            PathBuf::from("audit.bindings")
+        );
+    }
+
+    #[test]
+    fn names_export_marking_stays_u_unless_floored() {
+        assert_eq!(names_export_marking(None).display_banner(), "UNCLASSIFIED");
+        let s: Marking = "S".parse().unwrap();
+        assert_eq!(names_export_marking(Some(&s)).display_banner(), "SECRET");
+    }
+
+    #[test]
+    fn export_banner_uses_spelled_out_classification() {
+        let m: Marking = "TS//TK//NOFORN".parse().unwrap();
+        let v = export_banner_json(&m);
+        assert_eq!(v["_banner"], true);
+        assert_eq!(v["classification"], "TOP SECRET//TK//NOFORN");
+        assert!(v["generated_at"].as_str().is_some());
+    }
+
+    #[test]
+    fn write_jsonl_banner_then_rows() {
+        let row = lexicon_core::NameRow {
+            seq: 1,
+            event_type: "issued".into(),
+            created_at: "t".into(),
+            name: Some("OXIDE".into()),
+            canonical: "aa".into(),
+            event_hash: "bb".into(),
+            signature: "cc".into(),
+        };
+        let mut buf = Vec::new();
+        let banner = export_banner_json(&Marking::default());
+        write_jsonl_to(&mut buf, Some(&banner), &[row]).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        let mut lines = s.lines();
+        let head = lines.next().unwrap();
+        assert!(head.contains("\"_banner\":true"));
+        assert!(head.contains("UNCLASSIFIED"));
+        let body = lines.next().unwrap();
+        assert!(body.contains("OXIDE"));
+        assert!(!body.contains("marking"));
+        assert!(!body.contains("attribution"));
+        assert!(lines.next().is_none());
+    }
+
+    #[test]
+    fn redact_binding_export_clears_attribution() {
+        let row = || lexicon_core::BindingRow {
+            seq: 1,
+            event_type: "issued".into(),
+            created_at: String::new(),
+            names_seq: Some(1),
+            marking: Some("TS".into()),
+            program_pid: None,
+            compartment_id: None,
+            attribution: "jdoe@ws001".into(),
+            canonical: String::new(),
+            event_hash: String::new(),
+            signature: String::new(),
+        };
+        let mut keep = [row()];
+        redact_binding_export(&mut keep, true);
+        assert_eq!(keep[0].attribution, "jdoe@ws001");
+        let mut hide = [row()];
+        redact_binding_export(&mut hide, false);
+        assert!(hide[0].attribution.is_empty());
+        let json = serde_json::to_string(&hide[0]).unwrap();
+        assert!(!json.contains("attribution"));
+        assert!(json.contains("marking"));
+    }
+
+    #[test]
+    fn resolve_data_dir_profile() {
+        #[cfg(not(feature = "highside"))]
+        {
+            assert_eq!(resolve_data_dir(None).unwrap(), PathBuf::from(".meridian"));
+        }
+        #[cfg(feature = "highside")]
+        {
+            assert!(matches!(
+                resolve_data_dir(None),
+                Err(Error::ImplicitDataDir)
+            ));
+        }
+        assert_eq!(
+            resolve_data_dir(Some(Path::new("/var/lexicon"))).unwrap(),
+            PathBuf::from("/var/lexicon")
+        );
+    }
+
+    #[test]
     fn mint_program_flags_parse() {
         let cli = Cli::try_parse_from([
             "lexicon",
@@ -1713,13 +2263,79 @@ mod tests {
             Cmd::Mint {
                 program,
                 compartment,
+                seed,
                 ..
             } => {
                 assert!(program.is_none());
                 assert!(compartment.is_none());
+                assert!(seed.is_none());
             }
             _ => panic!("expected mint"),
         }
+    }
+
+    #[test]
+    fn mint_seed_parses() {
+        let hex64 = "00".repeat(32);
+        let cli = Cli::try_parse_from([
+            "lexicon", "mint", "--type", "nickname", "--agency", "DIA", "--seed", &hex64,
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Mint { seed, .. } => assert_eq!(seed.as_deref(), Some(hex64.as_str())),
+            _ => panic!("expected mint"),
+        }
+    }
+
+    #[test]
+    fn parse_vrf_seed_rejects_short() {
+        assert!(parse_vrf_seed("00").is_err());
+        assert!(parse_vrf_seed("zz").is_err());
+        assert!(parse_vrf_seed(&"11".repeat(32)).is_ok());
+    }
+
+    #[test]
+    fn mint_from_seed_smoke() {
+        let hex64 = "11".repeat(32);
+        let cli = Cli::try_parse_from([
+            "lexicon",
+            "--json",
+            "mint",
+            "--type",
+            "nickname",
+            "--agency",
+            "DIA",
+            "--seed",
+            &hex64,
+            "--max-attempts",
+            "4",
+        ])
+        .unwrap();
+        let inputs = resolve(None, None, None).unwrap();
+        mint_from_seed(&cli, &inputs, &Ui::new(true)).unwrap();
+    }
+
+    #[test]
+    fn marking_and_binding_file_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "lexicon",
+            "--marking-file",
+            "/tmp/marking.json",
+            "--binding-file",
+            "/tmp/binding.toml",
+            "check",
+            "--name",
+            "X",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.marking_file.as_deref(),
+            Some(Path::new("/tmp/marking.json"))
+        );
+        assert_eq!(
+            cli.binding_file.as_deref(),
+            Some(Path::new("/tmp/binding.toml"))
+        );
     }
 
     #[test]
@@ -1840,7 +2456,7 @@ mod tests {
         let m = page_marking(&recs, None);
         assert_eq!(m.display_banner(), "TOP SECRET//TK//NOFORN");
         assert_eq!(m.display_portion(), "TS//TK//NF");
-        let floored = page_marking(&recs, Some("TS//TK//SAR-QSV//NOFORN"));
+        let floored = page_marking(&recs, Some(&"TS//TK//SAR-QSV//NOFORN".parse().unwrap()));
         assert_eq!(floored.display_banner(), "TOP SECRET//TK//SAR-QSV//NOFORN");
     }
 }

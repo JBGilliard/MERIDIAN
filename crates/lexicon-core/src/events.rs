@@ -152,6 +152,15 @@ impl EventKind {
         }
     }
 
+    pub fn is_program(&self) -> bool {
+        matches!(
+            self,
+            Self::ProgramCreated(_)
+                | Self::CompartmentAdded(_)
+                | Self::ProgramControlsChanged { .. }
+        )
+    }
+
     pub fn to_program_event(&self) -> Option<ProgramEvent> {
         match self {
             Self::ProgramCreated(p) => Some(ProgramEvent::Created(p.clone())),
@@ -203,6 +212,7 @@ pub struct Event {
 impl Event {
     /// v2 binds attribution. v3 is the PQ valve (RFC §12).
     pub const PREFIX: &'static [u8] = b"MERIDIAN-EVENT-v2\0";
+    pub const BINDING_PREFIX: &'static [u8] = b"MERIDIAN-BINDING-v1\0";
 
     pub fn version() -> u8 {
         2
@@ -216,13 +226,69 @@ impl Event {
         }
     }
 
-    /// Fixed-order length-prefixed encoding. Not JSON — JSON key order is a footgun.
+    /// Full encoding (marking + attribution). Kept for tests / old combined hashes.
     pub fn canonical_bytes(&self) -> Vec<u8> {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(Self::PREFIX);
-        buf.push(self.kind.tag());
-        put_str(&mut buf, &self.created_at);
+        let mut buf = Self::header(Self::PREFIX, self.kind.tag(), &self.created_at);
         buf.extend(&self.attribution.canonical_bytes());
+        self.put_kind(&mut buf, true);
+        buf
+    }
+
+    /// Names-chain encoding: no attribution, no marking.
+    pub fn canonical_u_bytes(&self) -> Vec<u8> {
+        let mut buf = Self::header(Self::PREFIX, self.kind.tag(), &self.created_at);
+        self.put_kind(&mut buf, false);
+        buf
+    }
+
+    /// Bindings-chain encoding: attribution + marking + program_pid + compartment_id.
+    pub fn canonical_binding_bytes(&self) -> Vec<u8> {
+        let mut buf = Self::header(Self::BINDING_PREFIX, self.kind.tag(), &self.created_at);
+        buf.extend(&self.attribution.canonical_bytes());
+        match &self.kind {
+            EventKind::Issued {
+                marking,
+                program_pid,
+                compartment_id,
+                ..
+            } => {
+                buf.extend(&marking.canonical_bytes());
+                put_opt_norm(&mut buf, program_pid.as_deref());
+                put_opt_norm(&mut buf, compartment_id.as_deref());
+            }
+            EventKind::ProgramCreated(_)
+            | EventKind::CompartmentAdded(_)
+            | EventKind::ProgramControlsChanged { .. } => {
+                self.put_kind(&mut buf, true);
+            }
+            EventKind::Retired {
+                name,
+                reason,
+                authority_id,
+            }
+            | EventKind::Revoked {
+                name,
+                reason,
+                authority_id,
+            } => {
+                put_str(&mut buf, &normalize(name));
+                put_str(&mut buf, reason);
+                put_str(&mut buf, authority_id);
+            }
+            EventKind::KeyRotated { .. } | EventKind::Attempt { .. } => {}
+        }
+        buf
+    }
+
+    fn header(prefix: &[u8], tag: u8, created_at: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(prefix);
+        buf.push(tag);
+        put_str(&mut buf, created_at);
+        buf
+    }
+
+    fn put_kind(&self, buf: &mut Vec<u8>, include_marking: bool) {
         match &self.kind {
             EventKind::Issued {
                 name,
@@ -239,20 +305,22 @@ impl Event {
                 program_pid: _,
                 compartment_id: _,
             } => {
-                put_str(&mut buf, &normalize(name));
+                put_str(buf, &normalize(name));
                 buf.push(name_type.tag());
-                put_str(&mut buf, authority_id);
-                put_str(&mut buf, authority_pk);
-                put_str(&mut buf, pool_id);
+                put_str(buf, authority_id);
+                put_str(buf, authority_pk);
+                put_str(buf, pool_id);
                 buf.extend_from_slice(&sequence.to_le_bytes());
                 buf.extend_from_slice(&nonce.to_le_bytes());
-                put_str(&mut buf, vrf_proof);
-                put_str(&mut buf, vrf_output);
+                put_str(buf, vrf_proof);
+                put_str(buf, vrf_output);
                 buf.extend_from_slice(&(indices.len() as u32).to_le_bytes());
                 for i in indices {
                     buf.extend_from_slice(&i.to_le_bytes());
                 }
-                buf.extend(&marking.canonical_bytes());
+                if include_marking {
+                    buf.extend(&marking.canonical_bytes());
+                }
             }
             EventKind::Retired {
                 name,
@@ -264,9 +332,9 @@ impl Event {
                 reason,
                 authority_id,
             } => {
-                put_str(&mut buf, &normalize(name));
-                put_str(&mut buf, reason);
-                put_str(&mut buf, authority_id);
+                put_str(buf, &normalize(name));
+                put_str(buf, reason);
+                put_str(buf, authority_id);
             }
             EventKind::KeyRotated {
                 authority_id,
@@ -274,9 +342,9 @@ impl Event {
                 new_pk,
                 new_alg,
             } => {
-                put_str(&mut buf, authority_id);
-                put_str(&mut buf, old_pk);
-                put_str(&mut buf, new_pk);
+                put_str(buf, authority_id);
+                put_str(buf, old_pk);
+                put_str(buf, new_pk);
                 buf.push(new_alg.as_u8());
             }
             EventKind::Attempt {
@@ -287,30 +355,30 @@ impl Event {
                 reason,
                 detail,
             } => {
-                put_str(&mut buf, &normalize(candidate));
+                put_str(buf, &normalize(candidate));
                 buf.push(name_type.tag());
-                put_str(&mut buf, authority_id);
+                put_str(buf, authority_id);
                 buf.extend_from_slice(&nonce.to_le_bytes());
                 buf.push(reason.tag());
-                put_str(&mut buf, detail);
+                put_str(buf, detail);
             }
             EventKind::ProgramCreated(p) => {
-                put_str(&mut buf, &normalize(&p.pid));
-                put_str(&mut buf, &normalize(&p.nickname));
-                put_opt_norm(&mut buf, p.codeword.as_deref());
+                put_str(buf, &normalize(&p.pid));
+                put_str(buf, &normalize(&p.nickname));
+                put_opt_norm(buf, p.codeword.as_deref());
                 buf.push(p.sap_type.tag());
                 buf.push(p.level.as_u8());
-                put_str(&mut buf, &p.authority_id);
-                put_controls(&mut buf, &p.controls);
+                put_str(buf, &p.authority_id);
+                put_controls(buf, &p.controls);
             }
             EventKind::CompartmentAdded(c) => {
-                put_str(&mut buf, &normalize(&c.program_pid));
-                put_str(&mut buf, &normalize(&c.id));
-                put_str(&mut buf, &normalize(&c.nickname));
-                put_opt_norm(&mut buf, c.codeword.as_deref());
-                put_opt_norm(&mut buf, c.parent_id.as_deref());
-                put_opt_level(&mut buf, c.level);
-                put_controls(&mut buf, &c.controls);
+                put_str(buf, &normalize(&c.program_pid));
+                put_str(buf, &normalize(&c.id));
+                put_str(buf, &normalize(&c.nickname));
+                put_opt_norm(buf, c.codeword.as_deref());
+                put_opt_norm(buf, c.parent_id.as_deref());
+                put_opt_level(buf, c.level);
+                put_controls(buf, &c.controls);
             }
             EventKind::ProgramControlsChanged {
                 program_pid,
@@ -318,17 +386,24 @@ impl Event {
                 add,
                 remove,
             } => {
-                put_str(&mut buf, &normalize(program_pid));
-                put_opt_norm(&mut buf, compartment_id.as_deref());
-                put_controls(&mut buf, add);
-                put_controls(&mut buf, remove);
+                put_str(buf, &normalize(program_pid));
+                put_opt_norm(buf, compartment_id.as_deref());
+                put_controls(buf, add);
+                put_controls(buf, remove);
             }
         }
-        buf
     }
 
     pub fn hash(&self) -> [u8; 32] {
         crate::crypto::sha256(&[&self.canonical_bytes()])
+    }
+
+    pub fn hash_u(&self) -> [u8; 32] {
+        crate::crypto::sha256(&[&self.canonical_u_bytes()])
+    }
+
+    pub fn hash_binding(&self) -> [u8; 32] {
+        crate::crypto::sha256(&[&self.canonical_binding_bytes()])
     }
 
     pub fn issued_name(&self) -> Option<String> {
@@ -628,5 +703,92 @@ mod tests {
             wrap(kind(None)).hash(),
             wrap(kind(Some("QSV".into()))).hash()
         );
+        assert_eq!(
+            wrap(kind(None)).hash_u(),
+            wrap(kind(Some("QSV".into()))).hash_u()
+        );
+        assert_ne!(
+            wrap(kind(None)).hash_binding(),
+            wrap(kind(Some("QSV".into()))).hash_binding()
+        );
+    }
+
+    #[test]
+    fn canonical_u_omits_marking_and_attribution() {
+        use crate::attribition::Attribution;
+        let kind = EventKind::Issued {
+            name: "GRANITE SPIRE".into(),
+            name_type: NameType::Nickname,
+            authority_id: "DIA".into(),
+            authority_pk: "aa".into(),
+            pool_id: "p".into(),
+            sequence: 1,
+            nonce: 0,
+            vrf_proof: "00".into(),
+            vrf_output: "00".into(),
+            indices: vec![1, 2],
+            marking: crate::marking::Marking::default(),
+            program_pid: None,
+            compartment_id: None,
+        };
+        let mut a = wrap(kind.clone());
+        a.attribution = Attribution {
+            user: "jdoe".into(),
+            host: "ws001".into(),
+            ip: None,
+            hwid: None,
+        };
+        let mut b = wrap(kind);
+        b.kind = match b.kind {
+            EventKind::Issued {
+                name,
+                name_type,
+                authority_id,
+                authority_pk,
+                pool_id,
+                sequence,
+                nonce,
+                vrf_proof,
+                vrf_output,
+                indices,
+                program_pid,
+                compartment_id,
+                ..
+            } => EventKind::Issued {
+                name,
+                name_type,
+                authority_id,
+                authority_pk,
+                pool_id,
+                sequence,
+                nonce,
+                vrf_proof,
+                vrf_output,
+                indices,
+                marking: crate::marking::Marking {
+                    level: crate::marking::Level::TopSecret,
+                    ..Default::default()
+                },
+                program_pid,
+                compartment_id,
+            },
+            other => other,
+        };
+        assert_eq!(a.hash_u(), b.hash_u());
+        assert_ne!(a.hash(), b.hash());
+        let u = a.canonical_u_bytes();
+        assert!(!u.windows(b"jdoe".len()).any(|w| w == b"jdoe"));
+        assert!(a
+            .canonical_bytes()
+            .windows(b"jdoe".len())
+            .any(|w| w == b"jdoe"));
+        assert!(a
+            .canonical_binding_bytes()
+            .windows(b"jdoe".len())
+            .any(|w| w == b"jdoe"));
+        assert!(a.canonical_u_bytes().starts_with(Event::PREFIX));
+        assert!(a
+            .canonical_binding_bytes()
+            .starts_with(Event::BINDING_PREFIX));
     }
 }

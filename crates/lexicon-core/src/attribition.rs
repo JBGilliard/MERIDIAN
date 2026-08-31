@@ -48,6 +48,10 @@ impl Attribution {
     /// Canonical bytes are length-prefixed binary — not UTF-8 once any
     /// field is >= 128 bytes (ioreg hwid). Store this, sign that.
     pub fn display(&self) -> String {
+        if self.user.is_empty() && self.host.is_empty() && self.ip.is_none() && self.hwid.is_none()
+        {
+            return String::new();
+        }
         let mut s = format!("{}@{}", self.user, self.host);
         if let Some(ip) = &self.ip {
             s.push_str(" ip=");
@@ -132,5 +136,10 @@ mod tests {
         assert_eq!(a.user, "jdoe");
         assert_eq!(a.host, "ws001");
         assert_eq!(a.hwid.as_deref(), Some("mid"));
+    }
+
+    #[test]
+    fn default_display_is_empty() {
+        assert!(Attribution::default().display().is_empty());
     }
 }
