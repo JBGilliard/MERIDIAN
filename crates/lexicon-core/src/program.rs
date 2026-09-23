@@ -796,7 +796,7 @@ mod tests {
             Control::new(ControlKind::Sci, "HCS"),
         ];
         let m = derive_marking(&qsv(), Some(&hol));
-        assert_eq!(m.to_string(), "TS//TK,HCS//SAR-QSV-HOL//NF");
+        assert_eq!(m.to_string(), "TS//HCS/TK//SAR-QSV-HOL//NF");
     }
 
     #[test]
@@ -836,7 +836,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             set.derive_marking("QSV", Some("HOL")).unwrap().to_string(),
-            "TS//TK,SI//SAR-QSV-HOL"
+            "TS//SI/TK//SAR-QSV-HOL"
         );
     }
 

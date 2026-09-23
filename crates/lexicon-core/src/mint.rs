@@ -150,6 +150,20 @@ impl<'a> Minter<'a> {
                 continue;
             }
 
+            // Program and compartment names aren't in `names`, but they share
+            // the namespace; without this the minter could reissue one.
+            if self.ledger.is_display_name_taken(&p.name)? {
+                self.log_attempt(
+                    &p.name,
+                    req.name_type,
+                    nonce,
+                    AttemptReason::Collision,
+                    "held by a program or compartment",
+                )?;
+                nonce += 1;
+                continue;
+            }
+
             let vrf_proof = hex::encode(p.proof.as_bytes());
             let vrf_output = hex::encode(p.beta.as_bytes());
             let mut event = Event::new(EventKind::Issued {

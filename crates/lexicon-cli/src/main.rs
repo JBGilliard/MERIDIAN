@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use lexicon_core::events::{Event, EventKind};
 use lexicon_core::ledger::Ledger;
 use lexicon_core::linter::{LintSeverity, NameCandidate};
-use lexicon_core::marking::{Level, Marking};
+use lexicon_core::marking::{CompartmentKind, Level, Marking, SciRegister};
 use lexicon_core::mint::{verify_mint, MintRequest, Minter};
 use lexicon_core::pool::PoolWord;
 use lexicon_core::program::{
@@ -1147,6 +1147,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let level = Level::parse(&level).ok_or_else(|| format!("bad --level: {level}"))?;
                 let (sci, dissem, aea, fgi) =
                     merge_controls(inputs.binding.as_ref(), &sci, &dissem, &aea, &fgi);
+                check_register(Some(&pid), &sci)?;
                 let controls = collect_controls(sci, dissem, aea, fgi);
                 {
                     let led = open_ledger(&data_dir, &policy)?;
@@ -1361,7 +1362,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if ui.is_json() {
                     ui.json(&rows);
                 } else {
-                    let agg = led.aggregate_marking()?;
+                    let all: Vec<&Compartment> = comps.iter().collect();
+                    let mut agg = roll_up_marking(&p, &all);
+                    for (_, _, m) in &rows {
+                        if let Ok(m) = Marking::from_stored(m) {
+                            agg = agg.max(&m);
+                        }
+                    }
                     ui.banner_top(&agg);
                     ui.heading(&format!("names for program {}", p.pid));
                     for (name, kind, marking) in &rows {
@@ -1385,8 +1392,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let agency = p.authority_id.clone();
                     let slice_level = level
                         .as_deref()
-                        .and_then(lexicon_core::marking::Level::parse)
-                        .ok_or_else(|| format!("bad --level: {level:?}"))?;
+                        .map(|l| Level::parse(l).ok_or_else(|| format!("bad --level: {l}")))
+                        .transpose()?;
+                    if slice_level.is_some_and(|l| l > p.level) {
+                        return Err(
+                            "compartment --level may lower the program level, not raise it".into(),
+                        );
+                    }
+                    check_register(None, &sci)?;
                     let controls = sci
                         .into_iter()
                         .map(|v| Control::new(ControlKind::Sci, v))
@@ -1413,7 +1426,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         codeword,
                         parent_id: parent,
                         controls,
-                        level: Some(slice_level),
+                        level: slice_level,
                     };
                     let marking = derive_marking(&p, Some(&c));
                     let mut event = Event::new(EventKind::CompartmentAdded(c.clone()));
@@ -1466,6 +1479,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 let (sci, dissem, aea, fgi) =
                     merge_controls(inputs.binding.as_ref(), &sci, &dissem, &aea, &fgi);
+                if add {
+                    check_register(None, &sci)?;
+                }
                 let delta = collect_controls(sci, dissem, aea, fgi);
                 if delta.is_empty() {
                     return Err("need at least one of --sci/--dissem/--aea/--fgi".into());
@@ -1802,6 +1818,19 @@ fn control_values(controls: &[Control], kind: ControlKind) -> Vec<&str> {
         .filter(|c| c.kind == kind)
         .map(|c| c.value.as_str())
         .collect()
+}
+
+fn check_register(pid: Option<&str>, sci: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    let reg = SciRegister::bundled()?;
+    if let Some(pid) = pid {
+        if pid.contains('-') || !reg.allows(&CompartmentKind::Sap, pid) {
+            return Err("program pid is not a SAP designator in sci_register".into());
+        }
+    }
+    if sci.iter().any(|s| !reg.is_sci(s.trim())) {
+        return Err("--sci value is not an SCI designator in sci_register".into());
+    }
+    Ok(())
 }
 
 fn require_program(led: &Ledger, pid: &str) -> Result<Program, Box<dyn std::error::Error>> {

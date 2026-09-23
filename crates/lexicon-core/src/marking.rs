@@ -7,7 +7,7 @@
 
 use crate::error::Error;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::OnceLock;
 
@@ -382,7 +382,7 @@ impl Marking {
         }
         Marking {
             level,
-            caveats,
+            caveats: reconcile_releasability(caveats),
             compartments: comps,
         }
     }
@@ -421,26 +421,21 @@ impl Marking {
         } else {
             self.level.as_str().to_string()
         }];
-
-        let sci: Vec<&str> = self
+        // CAPCO: SCI control systems are slash-separated
+        let mut sci: Vec<&str> = self
             .compartments
             .iter()
             .filter(|c| c.kind == CompartmentKind::Sci && !c.designator.is_empty())
             .map(|c| c.designator.as_str())
             .collect();
+        sci.sort_unstable();
+        sci.dedup();
         if !sci.is_empty() {
-            parts.push(sci.join(","));
+            parts.push(sci.join("/"));
         }
 
-        for c in &self.compartments {
-            if c.kind != CompartmentKind::Sap {
-                continue;
-            }
-            if c.designator.is_empty() {
-                parts.push("SAR".into());
-            } else {
-                parts.push(format!("SAR-{}", c.designator));
-            }
+        for sar in sar_tokens(&self.compartments) {
+            parts.push(sar);
         }
 
         for c in &self.compartments {
@@ -608,6 +603,87 @@ impl Marking {
     }
 }
 
+fn sar_tokens(comps: &[Compartment]) -> Vec<String> {
+    let mut order: Vec<&str> = Vec::new();
+    let mut slices: HashMap<&str, BTreeMap<&str, BTreeSet<&str>>> = HashMap::new();
+    let mut out = Vec::new();
+    for c in comps.iter().filter(|c| c.kind == CompartmentKind::Sap) {
+        if c.designator.is_empty() {
+            out.push("SAR".to_string());
+            continue;
+        }
+        let (pid, rest) = c.designator.split_once('-').unwrap_or((&c.designator, ""));
+        if !slices.contains_key(pid) {
+            order.push(pid);
+        }
+        let entry = slices.entry(pid).or_default();
+        for sibling in rest.split('-') {
+            let mut words = sibling.split_whitespace();
+            if let Some(id) = words.next() {
+                entry.entry(id).or_default().extend(words);
+            }
+        }
+    }
+    for pid in order {
+        let mut tok = format!("SAR-{pid}");
+        for (id, subs) in &slices[pid] {
+            tok.push('-');
+            tok.push_str(id);
+            for s in subs {
+                tok.push(' ');
+                tok.push_str(s);
+            }
+        }
+        out.push(tok);
+    }
+    out
+}
+
+/// NOFORN and REL TO can't share a page: NOFORN wins, REL TO lists
+/// intersect, and an empty intersection collapses to NOFORN.
+fn reconcile_releasability(caveats: Vec<Caveat>) -> Vec<Caveat> {
+    let rels: Vec<&Vec<String>> = caveats
+        .iter()
+        .filter_map(|c| match c {
+            Caveat::RelTo { countries } => Some(countries),
+            _ => None,
+        })
+        .collect();
+    if rels.is_empty() {
+        return caveats;
+    }
+    let common: Vec<String> = if caveats.contains(&Caveat::Noforn) {
+        Vec::new()
+    } else {
+        rels[0]
+            .iter()
+            .filter(|c| rels[1..].iter().all(|r| r.contains(c)))
+            .cloned()
+            .collect()
+    };
+    let replacement = if common.is_empty() {
+        Caveat::Noforn
+    } else {
+        Caveat::RelTo { countries: common }
+    };
+    let mut out = Vec::with_capacity(caveats.len());
+    let mut placed = false;
+    for c in caveats {
+        match c {
+            Caveat::RelTo { .. } if !placed => {
+                placed = true;
+                if !out.contains(&replacement) {
+                    out.push(replacement.clone());
+                }
+            }
+            Caveat::RelTo { .. } => {}
+            Caveat::Noforn if out.contains(&Caveat::Noforn) => {}
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 impl fmt::Display for Marking {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.display_portion())
@@ -744,7 +820,7 @@ fn parse_token(seg: &str, kind_sci: &SciRegister) -> Result<Parsed, String> {
     }
 
     let parts: Vec<String> = up
-        .split(',')
+        .split([',', '/'])
         .map(|p| p.trim().to_ascii_uppercase())
         .filter(|p| !p.is_empty())
         .collect();
@@ -1131,12 +1207,54 @@ mod tests {
             kind: CompartmentKind::Sci,
             designator: "HCS".into()
         }));
-        assert_eq!(m.to_string(), "TS//TK,HCS");
+        assert_eq!(m.to_string(), "TS//HCS/TK");
         let legacy: Marking = "TS//SCI/TK,HCS".parse().unwrap();
-        assert_eq!(legacy.to_string(), "TS//TK,HCS");
+        assert_eq!(legacy.to_string(), "TS//HCS/TK");
         let tk: Marking = "TS//TK".parse().unwrap();
         let hcs: Marking = "TS//HCS".parse().unwrap();
-        assert_eq!(tk.max(&hcs).to_string(), "TS//TK,HCS");
+        assert_eq!(tk.max(&hcs).to_string(), "TS//HCS/TK");
+    }
+
+    #[test]
+    fn sci_slash_form_round_trips() {
+        let m: Marking = "TS//SI/TK//NOFORN".parse().unwrap();
+        assert_eq!(m.display_banner(), "TOP SECRET//SI/TK//NOFORN");
+        assert_eq!(Marking::from_stored(&m.to_string()).unwrap(), m);
+        assert!("TS//SI/ZZZZ".parse::<Marking>().is_err());
+    }
+
+    #[test]
+    fn same_program_slices_roll_up_into_one_sar() {
+        let nut: Marking = "S//SAR-QSV-NUT//NF".parse().unwrap();
+        let arb: Marking = "TS//TK//SAR-QSV-ARB//NF".parse().unwrap();
+        let si: Marking = "TS//SI//NF".parse().unwrap();
+        let agg = Marking::aggregate([si, nut, arb]);
+        assert_eq!(
+            agg.display_banner(),
+            "TOP SECRET//SI/TK//SAR-QSV-ARB-NUT//NOFORN"
+        );
+        let standing: Marking = "TS//SAR-QSV".parse().unwrap();
+        let sub = Marking::from_stored("TS//SAR-QSV-PER A1").unwrap();
+        let sub2 = Marking::from_stored("TS//SAR-QSV-PER A2-HOL").unwrap();
+        assert_eq!(
+            Marking::aggregate([standing, sub, sub2]).to_string(),
+            "TS//SAR-QSV-HOL-PER A1 A2"
+        );
+    }
+
+    #[test]
+    fn noforn_beats_rel_to_and_rel_lists_intersect() {
+        let rel: Marking = "S//REL TO USA,GBR,AUS".parse().unwrap();
+        let rel2: Marking = "S//REL TO USA,GBR".parse().unwrap();
+        let nf: Marking = "S//NOFORN".parse().unwrap();
+        assert_eq!(rel.max(&rel2).display_banner(), "SECRET//REL TO USA,GBR");
+        assert_eq!(rel.max(&nf).display_banner(), "SECRET//NOFORN");
+        assert_eq!(nf.max(&rel).display_banner(), "SECRET//NOFORN");
+        let can: Marking = "S//REL TO USA,CAN".parse().unwrap();
+        let gbr: Marking = "S//REL TO USA,GBR".parse().unwrap();
+        let aus: Marking = "S//REL TO AUS".parse().unwrap();
+        assert_eq!(can.max(&gbr).display_banner(), "SECRET//REL TO USA");
+        assert_eq!(can.max(&aus).display_banner(), "SECRET//NOFORN");
     }
 
     #[test]

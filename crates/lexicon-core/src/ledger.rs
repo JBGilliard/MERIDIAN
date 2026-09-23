@@ -526,6 +526,10 @@ impl Ledger {
                 SELECT 1 FROM compartments
                 WHERE UPPER(nickname) = ?1
                    OR UPPER(codeword) = ?1
+            ) OR EXISTS(
+                SELECT 1 FROM programs
+                WHERE UPPER(nickname) = ?1
+                   OR UPPER(codeword) = ?1
             )",
             [&key],
             |r| r.get(0),
@@ -2078,8 +2082,7 @@ mod tests {
         assert_eq!(cw.compartment_id.as_deref(), Some("HOL"));
 
         let agg = led.aggregate_marking().unwrap();
-        // Nickname derives SAR-QSV; codeword derives SAR-QSV-HOL; max unions.
-        assert_eq!(agg.to_string(), "TS//TK//SAR-QSV//SAR-QSV-HOL//NF");
+        assert_eq!(agg.to_string(), "TS//TK//SAR-QSV-HOL//NF");
 
         led.append(
             Event::new(EventKind::ProgramControlsChanged {
@@ -2092,7 +2095,7 @@ mod tests {
         )
         .unwrap();
         let cw = led.lookup("HOLLERED").unwrap().unwrap();
-        assert_eq!(cw.marking, "TS//TK,SI//SAR-QSV-HOL");
+        assert_eq!(cw.marking, "TS//SI/TK//SAR-QSV-HOL");
         led.verify_chain().unwrap();
     }
 
@@ -2175,6 +2178,7 @@ mod tests {
         led.append(Event::new(EventKind::CompartmentAdded(c)), &auth)
             .unwrap();
         assert!(led.is_display_name_taken("BIKINIED").unwrap());
+        assert!(led.is_display_name_taken(&qsv().nickname).unwrap());
         // Unrelated name is still free.
         assert!(!led.is_display_name_taken("OXIDE").unwrap());
     }
