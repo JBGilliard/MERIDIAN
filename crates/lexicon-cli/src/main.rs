@@ -1365,7 +1365,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ui.banner_top(&agg);
                     ui.heading(&format!("names for program {}", p.pid));
                     for (name, kind, marking) in &rows {
-                        ui.line(&format!("  {:<24} {:<20} {}", name, kind, marking));
+                        ui.line(&format!("  {name:<24} {kind:<20} {marking}"));
                     }
                     ui.banner_bottom(&agg);
                 }
@@ -1386,7 +1386,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let slice_level = level
                         .as_deref()
                         .and_then(lexicon_core::marking::Level::parse)
-                        .ok_or_else(|| format!("bad --level: {:?}", level))?;
+                        .ok_or_else(|| format!("bad --level: {level:?}"))?;
                     let controls = sci
                         .into_iter()
                         .map(|v| Control::new(ControlKind::Sci, v))
