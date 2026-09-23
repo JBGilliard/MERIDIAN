@@ -57,7 +57,7 @@ OSS default: `.meridian/` in cwd (keys + `names.sqlite`). Override:
 ./target/debug/lexicon --data-dir /tmp/lexicon-test key generate --agency DIA
 ```
 
-Highside builds error without `--data-dir`. Place `policy.toml` in that directory. See [HIGH-SIDE.md](HIGH-SIDE.md) for schema.
+High-side builds error without `--data-dir`. Place `policy.toml` in that directory. See [HIGH-SIDE.md](HIGH-SIDE.md) for schema.
 
 ## Supply-chain dev tools
 
@@ -109,7 +109,7 @@ Fuzz is not in default CI (nightly + long runtimes). Run before touching VRF, po
 |-----|---------|
 | test | `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, hsm clippy/test |
 | fips | apt install cmake ninja go; clippy + test `--features fips` |
-| audit | `rustsec/audit-check` |
+| audit | `cargo audit` (prebuilt via `taiki-e/install-action`) |
 | deny | `cargo deny check` (EmbarkStudios/cargo-deny-action) |
 | highside | `cargo check -p lexicon-cli --features highside` |
 | sbom | release build + `./scripts/sbom.sh` → `lexicon.cdx.json` artifact |

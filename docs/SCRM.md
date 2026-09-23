@@ -1,6 +1,6 @@
 # Supply chain risk management (SCRM)
 
-MERIDIAN is Rust + crates.io dependencies + a bundled SQLite (via `rusqlite` `bundled`). This document is the adopter-facing SCRM summary. Details live in repo config and scripts.
+MERIDIAN is Rust + crates.io dependencies + a bundled SQLite (via `rusqlite` `bundled`). Policy enforcement and automation live in `deny.toml` and `scripts/`.
 
 ## Policy files
 
@@ -8,7 +8,7 @@ MERIDIAN is Rust + crates.io dependencies + a bundled SQLite (via `rusqlite` `bu
 |------|------|
 | `deny.toml` | `cargo deny check`: licenses, advisories, duplicate crates, source allowlist |
 | `Cargo.lock` | Locked dependency graph; required for `--locked` / vendor / intro package |
-| `rust-toolchain.toml` | Pinned `rustc` 1.85.0, `profile = default` |
+| `rust-toolchain.toml` | Pinned `rustc` 1.88.0, `profile = default` |
 | `.cargo/config.toml.example` | Vendored-sources replace for air-gap (`../vendor`) |
 
 ## cargo deny
@@ -52,7 +52,7 @@ GitHub Actions (`.github/workflows/ci.yml`):
 
 - `fmt`, `clippy -D warnings`, `test` (workspace)
 - `fips` job (cmake, ninja, go; clippy + test with `--features fips`)
-- `cargo-audit` via `rustsec/audit-check`
+- `cargo-audit` via a prebuilt CI tool
 - `cargo deny check` via `EmbarkStudios/cargo-deny-action`
 - `highside` compile check (`cargo check -p lexicon-cli --features highside`)
 - `sbom` job (release build + `./scripts/sbom.sh`; artifact `lexicon.cdx.json`)

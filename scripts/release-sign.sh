@@ -176,13 +176,20 @@ HASH_BODY="$(cat "$DIST/SHA256SUMS")"
 cat >"$DIST/INTRO-PACKAGE.txt" <<EOF
 MERIDIAN intro package
 ======================
-Unclassified source/binary packet for accredited program-office evaluation.
-Not a NICKA system of record. Official assignment remains NICKA.
+Independently built proof-of-concept software for defense and intelligence
+nomenclature and deconfliction. Unclassified source/binary packet for
+evaluation.
+
+Not endorsed, influenced, or sponsored by any U.S. government agency,
+including the Department of War or any element of the Intelligence
+Community.
+
+Not NICKA; official name assignment remains NICKA.
 
 version:     $VERSION
 created:     $CREATED UTC
 rustc:       $RUSTC
-toolchain:   rust-toolchain.toml (1.85.0, profile=default)
+toolchain:   rust-toolchain.toml (1.88.0, profile=default)
 signer:      $SIGNER
 
 Artifacts (SHA-256):

@@ -2,7 +2,7 @@
 
 MERIDIAN's default (OSS) build is an unclassified local naming registry. The **highside** Cargo feature is the accredited profile for environments that persist classified bindings and run under an explicit data-dir policy.
 
-This is not NICKA. Official assignment remains NICKA. MERIDIAN is a reference implementation for program-office adoption after the adopter's own RMF.
+MERIDIAN is not NICKA; official name assignment remains NICKA. Deployment and accreditation under this feature are the adopter's own RMF responsibility.
 
 ## Two-chain ledger
 
@@ -42,7 +42,7 @@ CI compiles `highside` on every PR. Full `highside,fips` release binaries are pr
 
 ## Data directory
 
-Highside builds **refuse** the OSS default `.meridian` cwd path. Every command needs an explicit `--data-dir`:
+High-side builds **refuse** the OSS default `.meridian` cwd path. Every command needs an explicit `--data-dir`:
 
 ```bash
 lexicon --data-dir /var/lexicon/keytab mint --type nickname --agency DIA
@@ -107,7 +107,7 @@ Precedence for the floor marking: binding file, then marking file, then `--class
 - Default export is **names only** (unclassified chain).
 - `--bindings` writes a second JSONL file (`<file>.bindings.jsonl`) with a classification banner header. Requires policy.
 - Attribution is redacted from export unless `--include-attribution` and policy allow it.
-- Highside deployments should treat the bindings sidecar as classified at rest and in transit.
+- High-side deployments should treat the bindings sidecar as classified at rest and in transit.
 
 ## Operator checklist
 

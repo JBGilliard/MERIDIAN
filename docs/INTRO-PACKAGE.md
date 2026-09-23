@@ -1,6 +1,6 @@
 # Intro package
 
-The **intro package** is an unclassified artifact bundle for accredited program-office evaluation. It is not a deployed system, not a NICKA system of record, and not an IC enterprise service. Official assignment remains NICKA.
+The **intro package** is an unclassified artifact bundle for evaluation. It is not a deployed system; official name assignment remains NICKA.
 
 Adopters run their own RMF, replace sample registers with authoritative data, and build classified bindings on accredited hosts.
 
@@ -60,7 +60,7 @@ gpg --verify SHA256SUMS.asc SHA256SUMS
 cosign verify-blob --key cosign.pub --signature SHA256SUMS.sig SHA256SUMS
 ```
 
-Read `INTRO-PACKAGE.txt` for the exact artifact list and rustc/toolchain pin (`rust-toolchain.toml`, currently 1.85.0).
+Read `INTRO-PACKAGE.txt` for the exact artifact list and rustc/toolchain pin (`rust-toolchain.toml`, currently 1.88.0).
 
 ## Air-gap rebuild
 
@@ -80,7 +80,7 @@ Compare the rebuilt binary hash to `SHA256SUMS`. A mismatch means different link
 4. Default build must not write attribution without `--include-attribution` and policy.
 5. FIPS path: `lexicon --approved-mode ledger verify` with `--features fips` binary.
 
-## Highside intro builds
+## High-side intro builds
 
 For classified evaluation hosts, rebuild with:
 

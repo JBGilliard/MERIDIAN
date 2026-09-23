@@ -6,6 +6,9 @@
 *.sqlite
 *.sqlite-journal
 *.sk
+*.key
+*.gpg
+keys/
 .DS_Store
 /data
 /vendor

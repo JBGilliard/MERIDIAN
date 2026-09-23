@@ -8,9 +8,9 @@ edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/jbgilliard/MERIDIAN"
 homepage = "https://github.com/jbgilliard/MERIDIAN"
-description = "Open-source registry, deconfliction, and nomenclature for the intelligence community"
+description = "Proof-of-concept local nomenclature registry and deconfliction for defense and intelligence programs"
 authors = ["MERIDIAN contributors"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 lexicon-core = { path = "crates/lexicon-core", version = "0.1.0" }
@@ -27,7 +27,7 @@ hex = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4.5", features = ["derive"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
-time = { version = "=0.3.45", features = ["formatting", "parsing", "serde"] }
+time = { version = "=0.3.47", features = ["formatting", "parsing", "serde"] }
 
 [profile.release]
 panic = "abort"

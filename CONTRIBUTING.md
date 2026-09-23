@@ -1,6 +1,6 @@
 # Contributing
 
-MERIDIAN is an open-source reference implementation for IC nomenclature and deconfliction. Contributions are welcome; production accreditation remains each adopter's responsibility.
+MERIDIAN is a proof-of-concept reference implementation for nomenclature and deconfliction in defense and intelligence programs. Contributions are welcome; production accreditation remains each adopter's responsibility.
 
 ## Before you start
 

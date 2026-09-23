@@ -26,10 +26,8 @@ use input_files::{merge_controls, mint_marking, pick_opt, resolve, ResolvedInput
 use ui::Ui;
 
 const CLI_BANNER: &str = "\
-NOT NICKA. Official name assignment remains NICKA.
-
-MERIDIAN-lexicon is an open-source local naming registry reference
-implementation. It is not an IC enterprise service or system of record.
+Local naming registry reference implementation. Not NICKA; official name
+assignment remains NICKA.
 
 Ledger: names.sqlite (unclassified, always) + bindings.sqlite
 (classified, optional, policy-gated via policy.toml).
@@ -48,8 +46,7 @@ Data dir: OSS default .meridian in cwd; highside builds require
     name = "lexicon",
     about = "Local naming registry: mint, verify, and lint un-guessable names",
     long_about = "Local naming registry: mint, verify, and lint un-guessable names.\n\n\
-NOT NICKA. Official name assignment remains NICKA. Reference implementation\n\
-only; not an IC enterprise service or system of record.",
+Not NICKA; official name assignment remains NICKA.",
     before_help = CLI_BANNER,
     version
 )]
@@ -1014,41 +1011,37 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                 ui.line(&format!("    {}", sample(sw)));
                             }
                         }
-                    } else {
-                        if ui.is_json() {
-                            ui.json(&serde_json::json!({
-                                "agency": alloc.id, "first_letters": alloc.first_letters,
-                                "digraphs": alloc.digraphs, "sap_designators": alloc.sap_designators,
-                            }));
-                        } else {
-                            ui.heading(&format!("agency {}", alloc.id));
-                            ui.kv("first letters", &alloc.first_letters);
-                            ui.kv("digraphs", &alloc.digraphs.join(", "));
-                            ui.kv("sap", &alloc.sap_designators.join(", "));
-                        }
-                    }
-                } else {
-                    if ui.is_json() {
+                    } else if ui.is_json() {
                         ui.json(&serde_json::json!({
-                            "pool_id": pools.id,
-                            "agencies": pools.agencies.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
-                            "nickname_first": pools.nickname_first.len(),
-                            "nickname_second": pools.nickname_second.len(),
-                            "codeword": pools.codeword.len(),
-                            "cryptonym_word": pools.cryptonym_word.len(),
-                            "exercise_first": pools.exercise_first.len(),
-                            "exercise_second": pools.exercise_second.len(),
+                            "agency": alloc.id, "first_letters": alloc.first_letters,
+                            "digraphs": alloc.digraphs, "sap_designators": alloc.sap_designators,
                         }));
                     } else {
-                        ui.heading(&format!("pool {}", pools.id));
-                        ui.kv("agencies", &pools.agencies.len().to_string());
-                        ui.kv("nickname_first", &pools.nickname_first.len().to_string());
-                        ui.kv("nickname_second", &pools.nickname_second.len().to_string());
-                        ui.kv("codeword", &pools.codeword.len().to_string());
-                        ui.kv("cryptonym_word", &pools.cryptonym_word.len().to_string());
-                        ui.kv("exercise_first", &pools.exercise_first.len().to_string());
-                        ui.kv("exercise_second", &pools.exercise_second.len().to_string());
+                        ui.heading(&format!("agency {}", alloc.id));
+                        ui.kv("first letters", &alloc.first_letters);
+                        ui.kv("digraphs", &alloc.digraphs.join(", "));
+                        ui.kv("sap", &alloc.sap_designators.join(", "));
                     }
+                } else if ui.is_json() {
+                    ui.json(&serde_json::json!({
+                        "pool_id": pools.id,
+                        "agencies": pools.agencies.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+                        "nickname_first": pools.nickname_first.len(),
+                        "nickname_second": pools.nickname_second.len(),
+                        "codeword": pools.codeword.len(),
+                        "cryptonym_word": pools.cryptonym_word.len(),
+                        "exercise_first": pools.exercise_first.len(),
+                        "exercise_second": pools.exercise_second.len(),
+                    }));
+                } else {
+                    ui.heading(&format!("pool {}", pools.id));
+                    ui.kv("agencies", &pools.agencies.len().to_string());
+                    ui.kv("nickname_first", &pools.nickname_first.len().to_string());
+                    ui.kv("nickname_second", &pools.nickname_second.len().to_string());
+                    ui.kv("codeword", &pools.codeword.len().to_string());
+                    ui.kv("cryptonym_word", &pools.cryptonym_word.len().to_string());
+                    ui.kv("exercise_first", &pools.exercise_first.len().to_string());
+                    ui.kv("exercise_second", &pools.exercise_second.len().to_string());
                 }
             }
             PoolCmd::Agency { cmd } => match cmd {

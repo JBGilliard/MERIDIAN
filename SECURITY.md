@@ -44,7 +44,7 @@ Assume an operator with shell access can exfiltrate anything they can read, incl
 | Export default | Names chain only |
 | Export `--bindings` | Classified sidecar; policy + banner required |
 
-Highside builds require explicit `--data-dir` and `policy.toml`. OSS builds default to no bindings file and no attribution.
+High-side builds require explicit `--data-dir` and `policy.toml`. OSS builds default to no bindings file and no attribution.
 
 ## Cryptography
 
@@ -77,7 +77,7 @@ Confirmed behavior evaluators should re-check on each release:
 
 ## Hardening recommendations for adopters
 
-1. Run highside + FIPS on accredited OS builds; use `--approved-mode` in production scripts.
+1. Build with `highside` and `fips` together for accredited hosts; use `--approved-mode` in production scripts.
 2. Separate unclassified names hosts from classified bindings hosts when possible.
 3. Restrict filesystem permissions on `--data-dir` and keys.
 4. Replace sample registers before any real SAP/SCI mint.
