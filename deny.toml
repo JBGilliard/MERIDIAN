@@ -1,0 +1,38 @@
+# `cargo deny check`
+# Advisories: vulns fail closed (cargo-deny default). Yanked fail. Unmaintained warn.
+# Sources: crates.io only. Git/path third-party sources denied.
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+# cargo-deny 0.18+ has no warn lint here (all|workspace|transitive|none).
+# "none" = do not fail the check. Scripts pass -W unmaintained when the binary
+# still treats unmaintained as a diagnostic; otherwise this is warn-by-not-failing.
+unmaintained = "none"
+
+[licenses]
+confidence-threshold = 0.93
+unused-allowed-license = "warn"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CC0-1.0",
+    "NCSA",
+    "OpenSSL",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

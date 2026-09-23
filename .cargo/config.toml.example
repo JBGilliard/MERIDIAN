@@ -1,0 +1,13 @@
+# Copy to .cargo/config.toml after `scripts/vendor.sh` to build with no crates.io.
+# Path is relative to this file (`.cargo/`), so ../vendor is the repo-root vendor dir.
+#
+#   cp .cargo/config.toml.example .cargo/config.toml
+#   cargo build --locked --offline -p lexicon-cli
+#
+# Do not commit .cargo/config.toml; networked CI must keep crates.io.
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "../vendor"

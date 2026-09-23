@@ -1,0 +1,109 @@
+use thiserror::Error;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("vrf proof invalid")]
+    VrfInvalid,
+
+    #[error("vrf encode-to-curve failed")]
+    VrfEncodeToCurve,
+
+    #[error("name already on ledger ({status}): {name}")]
+    NameTaken { name: String, status: String },
+
+    #[error("lint rejected ({rule}): {detail}")]
+    LintRejected { rule: String, detail: String },
+
+    #[error("exhausted {0} mint attempts without a clean name")]
+    MintExhausted(u32),
+
+    #[error("unknown pool: {0}")]
+    UnknownPool(String),
+
+    #[error("unknown agency: {0}")]
+    UnknownAgency(String),
+
+    #[error("empty pool: {0}")]
+    EmptyPool(String),
+
+    #[error("name does not match VRF-derived pool indices")]
+    IndexMismatch,
+
+    #[error("ledger is empty")]
+    LedgerEmpty,
+
+    #[error("ledger corrupt: {0}")]
+    LedgerCorrupt(String),
+
+    #[error("no ledger event at seq {0}")]
+    MissingEvent(u64),
+
+    #[error("inclusion proof does not match root")]
+    InclusionFailed,
+
+    #[error("signature invalid")]
+    BadSignature,
+
+    #[error("unsupported signature algorithm: {0} (not built into this binary)")]
+    UnsupportedAlg(String),
+
+    #[error("key error: {0}")]
+    Key(String),
+
+    #[error("no key for {agency}; run: lexicon key generate --agency {agency}")]
+    MissingKey { agency: String },
+
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+
+    #[error("sqlite: {0}")]
+    Db(#[from] rusqlite::Error),
+
+    #[error("time: {0}")]
+    Time(String),
+
+    #[error("parse: {0}")]
+    Parse(String),
+
+    #[error("{requester} cannot modify {name}: owned by {owner}")]
+    NotOwner {
+        name: String,
+        requester: String,
+        owner: String,
+    },
+
+    #[error(
+        "ledger schema version {found} is newer than this binary (max {max}); upgrade lexicon"
+    )]
+    SchemaTooNew { found: i64, max: i64 },
+
+    #[error("crypto boundary: {0}")]
+    CryptoBoundary(String),
+
+    #[error("bindings store is closed")]
+    BindingsClosed,
+
+    #[error("policy violation: {0}")]
+    PolicyViolation(String),
+
+    #[error("--data-dir is required (cwd default .meridian is refused)")]
+    ImplicitDataDir,
+
+    #[error("legacy combined ledger.sqlite is refused; start clean")]
+    LegacyLedger,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_variants_display() {
+        assert!(Error::BindingsClosed.to_string().contains("closed"));
+        assert!(Error::LegacyLedger.to_string().contains("legacy"));
+        assert!(Error::ImplicitDataDir.to_string().contains("--data-dir"));
+        assert!(Error::PolicyViolation("x".into()).to_string().contains("x"));
+    }
+}

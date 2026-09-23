@@ -1,0 +1,39 @@
+[package]
+name = "lexicon-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "VRF minting, uniqueness ledger, and style linter for meridian-lexicon"
+repository.workspace = true
+
+[dependencies]
+curve25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+rusqlite.workspace = true
+zeroize.workspace = true
+time.workspace = true
+toml = "0.8"
+ml-dsa = { version = "0.1.1", optional = true }
+# aws-lc-fips-sys needs cmake + go. Event sigs/hash go through it; dalek stays for ECVRF.
+aws-lc-rs = { version = "1.18", optional = true, features = ["fips"] }
+
+[features]
+default = []
+# ML-DSA (FIPS 204) event signatures. Off by default; `cargo build --features pq` enables it.
+pq = ["ml-dsa"]
+# SHA-256 / Ed25519 / ML-DSA via AWS-LC FIPS 140-3. ECVRF stays outside (SC-13(2)).
+fips = ["dep:aws-lc-rs"]
+# Local-socket VRF proxy. RemoteVrfSigner is a compiling stub; the proxy is the HSM profile.
+hsm = []
+# Accredited high-side profile. Explicit --data-dir; policy.toml required.
+highside = []
+
+[dev-dependencies]
+proptest = "1.6"
+tempfile = "3"

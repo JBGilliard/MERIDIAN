@@ -1,0 +1,30 @@
+[package]
+name = "lexicon-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CLI for meridian-lexicon: mint, verify, lint, inspect"
+repository.workspace = true
+
+[[bin]]
+name = "lexicon"
+path = "src/main.rs"
+
+[features]
+default = []
+pq = ["lexicon-core/pq"]
+fips = ["lexicon-core/fips"]
+hsm = ["lexicon-core/hsm"]
+highside = ["lexicon-core/highside"]
+
+[dependencies]
+lexicon-core.workspace = true
+lexicon-pools.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+toml = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
