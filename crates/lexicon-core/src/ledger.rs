@@ -648,7 +648,7 @@ impl Ledger {
     }
 
     /// Every name record, ordered by issue seq. The CLI filters
-    /// in Rust — keeps SQL out of the trust path.
+    /// in Rust; keeps SQL out of the trust path.
     pub fn name_records(&self) -> Result<Vec<NameRecord>> {
         let mut stmt = self.names.prepare(
             "SELECT n.display, n.normalized, n.status, n.name_type, n.authority_id, n.event_seq, e.created_at, n.issued_seq FROM names n JOIN events e ON n.event_seq = e.seq ORDER BY n.issued_seq",

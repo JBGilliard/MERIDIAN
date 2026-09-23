@@ -6,7 +6,7 @@
 //! production build.
 //!
 //! PIV/CAC binding is the HSM profile (future). AU-10 non-repudiation waits
-//! on that — this crate records who the OS said was at the keyboard.
+//! on that: this crate records who the OS said was at the keyboard.
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,7 @@ pub struct Attribution {
 }
 
 impl Attribution {
-    /// Fresh session claim. `ip` is always None — a UDP-probe address is not identity.
+    /// Fresh session claim. `ip` is always None: a UDP-probe address is not identity.
     pub fn session(user: impl Into<String>, host: impl Into<String>, hwid: Option<String>) -> Self {
         Self {
             user: user.into(),
@@ -45,7 +45,7 @@ impl Attribution {
     }
 
     /// Human-readable form for the ledger TEXT column.
-    /// Canonical bytes are length-prefixed binary — not UTF-8 once any
+    /// Canonical bytes are length-prefixed binary, not UTF-8, once any
     /// field is >= 128 bytes (ioreg hwid). Store this, sign that.
     pub fn display(&self) -> String {
         if self.user.is_empty() && self.host.is_empty() && self.ip.is_none() && self.hwid.is_none()

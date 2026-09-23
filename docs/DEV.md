@@ -57,7 +57,7 @@ OSS default: `.meridian/` in cwd (keys + `names.sqlite`). Override:
 ./target/debug/lexicon --data-dir /tmp/lexicon-test key generate --agency DIA
 ```
 
-Highside builds error without `--data-dir`. Place `policy.toml` in that directory — see [HIGH-SIDE.md](HIGH-SIDE.md) for schema.
+Highside builds error without `--data-dir`. Place `policy.toml` in that directory. See [HIGH-SIDE.md](HIGH-SIDE.md) for schema.
 
 ## Supply-chain dev tools
 
@@ -141,7 +141,7 @@ opt-level = 3
 
 ## musl static builds
 
-Not shipped by default. Static musl binaries are possible with `x86_64-unknown-linux-musl` but require a musl toolchain and may affect SQLite/aws-lc linking. Document target triple and linker flags in your intro package if you ship musl — hash verification is mandatory.
+Not shipped by default. Static musl binaries are possible with `x86_64-unknown-linux-musl` but require a musl toolchain and may affect SQLite/aws-lc linking. Document target triple and linker flags in your intro package if you ship musl. Hash verification is mandatory.
 
 ## Debugging tips
 

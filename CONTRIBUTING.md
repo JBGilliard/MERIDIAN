@@ -4,7 +4,7 @@ MERIDIAN is an open-source reference implementation for IC nomenclature and deco
 
 ## Before you start
 
-1. Read [RFC-0001](docs/RFC-0001.md) for protocol semantics — especially deconfliction (one display-name namespace across markings) and program-derived markings.
+1. Read [RFC-0001](docs/RFC-0001.md) for protocol semantics, especially deconfliction (one display-name namespace across markings) and program-derived markings.
 2. Read [SECURITY.md](SECURITY.md) for classification and disclosure expectations.
 3. Do not commit secrets: authority keys, `policy.toml` from accredited sites, real `bindings.sqlite`, or operational registers.
 
@@ -21,15 +21,15 @@ See [docs/DEV.md](docs/DEV.md) for features, fuzzing, and local CI parity.
 
 ## Code standards
 
-- `cargo fmt --all` — enforced in CI
-- `cargo clippy --workspace --all-targets -- -D warnings` — no warnings
+- `cargo fmt --all`: enforced in CI
+- `cargo clippy --workspace --all-targets -- -D warnings`: no warnings
 - Match existing style: sparse comments (why, not what), minimal diff scope
 - Errors propagate as `lexicon_core::Error`; avoid new `unwrap()` in production paths (tests OK)
 
 ## Pull requests
 
 1. Branch from `main`.
-2. Keep PRs focused — one logical change per PR when possible.
+2. Keep PRs focused: one logical change per PR when possible.
 3. Include tests for behavior changes in `lexicon-core` / `lexicon-cli`.
 4. Update docs when CLI flags, policy, or ledger format change.
 5. CI must pass: fmt, clippy, test, fips, cargo-audit, cargo-deny, highside compile, sbom.
@@ -63,4 +63,4 @@ By contributing, you agree that your contributions are licensed under the projec
 
 ## Questions
 
-Use GitHub Discussions or issues for design questions that are not security-sensitive. For deployment/accreditation questions, work through your program office — maintainers do not speak for NICKA or any operational authority.
+Use GitHub Discussions or issues for design questions that are not security-sensitive. For deployment/accreditation questions, work through your program office. Maintainers do not speak for NICKA or any operational authority.

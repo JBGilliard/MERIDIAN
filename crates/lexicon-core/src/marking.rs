@@ -365,7 +365,7 @@ impl Marking {
     }
 
     /// Container marking: higher level, caveats and compartments unioned.
-    /// `max(TS//TK, CUI) = TS//TK` — upgraded by aggregation.
+    /// `max(TS//TK, CUI) = TS//TK`: upgraded by aggregation.
     pub fn max(&self, other: &Marking) -> Marking {
         let level = self.level.max(other.level);
         let mut caveats = self.caveats.clone();
@@ -530,7 +530,7 @@ impl Marking {
         Self::parse_inner(s, Some(sci), Some(countries), true)
     }
 
-    /// Rows already on the ledger. Mint-time register does not apply —
+    /// Rows already on the ledger. Mint-time register does not apply:
     /// a later sci_register must not make `ledger verify` fail.
     /// Accepts legacy `SCI/<dg>` / `SAP/<dg>` and out-of-order tokens.
     pub fn from_stored(s: &str) -> Result<Self, String> {
@@ -859,7 +859,7 @@ mod tests {
         assert_eq!(m.to_string(), "TS//SAR-QSV//WAIVED//NF");
         // WAIVED is typed, not an Other caveat that warns.
         assert!(m.warnings().is_empty());
-        // Canonical tag is distinct from HVSACO (6) — no collision.
+        // Canonical tag is distinct from HVSACO (6): no collision.
         let waived = Marking {
             level: Level::TopSecret,
             caveats: vec![Caveat::Waived],

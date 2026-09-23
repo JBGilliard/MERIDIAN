@@ -151,7 +151,7 @@ impl Signer for MlDsaSigner {
 }
 
 /// Verify every part of `sig` against `pks`. Each part must verify
-/// under exactly one pk, and each pk is used at most once — a two-part
+/// under exactly one pk, and each pk is used at most once. A two-part
 /// signature requires two distinct pks (two-person control).
 pub fn verify(pks: &[&[u8]], msg: &[u8], sig: &Signature) -> Result<()> {
     if sig.parts.is_empty() {

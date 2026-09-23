@@ -2,11 +2,9 @@
 
 **MERIDIAN-lexicon** is an open-source local naming registry. It mints un-guessable names with a verifiable random function (VRF), verifies names against an append-only ledger and word pools, and records every mint, retirement, and revocation with a Merkle chain.
 
-Not endorsed, influenced, or sponsored by any U.S. government agency, including the Department of War or any element of the Intelligence Community.
+*Not endorsed, influenced, or sponsored by any U.S. government agency, including the Department of War or any element of the Intelligence Community.*
 
-This is not NICKA. Official IC name assignment stays with NICKA. MERIDIAN-lexicon is not a system of record and not an IC enterprise service — it ships as government-off-the-shelf (GOTS) reference software that a program office runs on its own infrastructure, under its own accreditation.
-
-The repository and bundled pool data are UNCLASSIFIED. Bundled registers are development and test samples, not authoritative data. Production hosts use accreditor-approved registers and store classified bindings under site policy — see [docs/HIGH-SIDE.md](docs/HIGH-SIDE.md).
+The repository and bundled pool data are UNCLASSIFIED. Bundled registers are development and test samples, not authoritative data. Production hosts use accreditor-approved registers and store classified bindings under site policy. See [docs/HIGH-SIDE.md](docs/HIGH-SIDE.md).
 
 ```
 lexicon mint --type nickname --agency DIA
@@ -14,9 +12,9 @@ lexicon mint --type nickname --agency DIA
 
 ## Operating model
 
-Each program office runs its own instance against its own ledger. A program office supplies its authority keys, its SCI/SAP registers, and its own RMF accreditation. There is no shared or federated service in this version — [RFC-0001](docs/RFC-0001.md) specifies federation, live authoritative registers, post-quantum transport, and HSM/PIV binding as future capabilities, not shipped ones.
+Each program office runs its own instance against its own ledger. A program office supplies its authority keys, its SCI/SAP registers, and its own RMF accreditation. There is no shared or federated service in this version. [RFC-0001](docs/RFC-0001.md) specifies federation, live authoritative registers, post-quantum transport, and HSM/PIV binding as future capabilities, not shipped ones.
 
-Default (OSS) builds write only the unclassified names chain, in `.meridian/` in the working directory. The `highside` feature adds a second, policy-gated, classified bindings chain and requires an explicit `--data-dir` and a `policy.toml` — no implicit cwd path. See [docs/HIGH-SIDE.md](docs/HIGH-SIDE.md).
+Default (OSS) builds write only the unclassified names chain, in `.meridian/` in the working directory. The `highside` feature adds a second, policy-gated, classified bindings chain and requires an explicit `--data-dir` and a `policy.toml`, no implicit cwd path. See [docs/HIGH-SIDE.md](docs/HIGH-SIDE.md).
 
 ## Architecture
 

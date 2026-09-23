@@ -133,7 +133,7 @@ pub fn portion(marking: &Marking) -> String {
     format!("({})", marking.display_portion())
 }
 
-/// Re-display a stored marking string in portion form. Lenient — legacy
+/// Re-display a stored marking string in portion form. Lenient: legacy
 /// `SCI/<dg>` rows still render in the new grammar.
 pub fn portion_of_stored(s: &str) -> String {
     match Marking::from_stored(s) {

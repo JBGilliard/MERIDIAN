@@ -31,7 +31,7 @@ MERIDIAN-lexicon is a **local** naming registry reference implementation. It is 
 - HSM-backed production deployment (seam exists; proxy not shipped)
 - Post-quantum transport (ML-KEM)
 
-Assume an operator with shell access can exfiltrate anything they can read — including `bindings.sqlite` if they enabled persistence. Policy and argv gates reduce accidental spillage; they do not stop a malicious insider.
+Assume an operator with shell access can exfiltrate anything they can read, including `bindings.sqlite` if they enabled persistence. Policy and argv gates reduce accidental spillage; they do not stop a malicious insider.
 
 ## Classification boundaries
 
@@ -64,7 +64,7 @@ Confirmed behavior evaluators should re-check on each release:
 - No attribution unless `--include-attribution` **and** policy allows
 - No `bindings.sqlite` unless `--persist-markings` **and** policy allows
 - `ledger export` writes names only unless `--bindings` **and** policy allows
-- `mint --seed` performs a dry run — **no** SQLite writes
+- `mint --seed` performs a dry run: **no** SQLite writes
 - Legacy `ledger.sqlite` refuses open; migrate quarantines it
 
 ## Residual risks

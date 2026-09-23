@@ -1,4 +1,4 @@
-# U.S. military and government acronyms + weapon/platform names — reject list.
+# U.S. military and government acronyms + weapon/platform names: reject list.
 # Source: wikipedia dump in this repo (List of U.S. government and military
 # acronyms). 
 #

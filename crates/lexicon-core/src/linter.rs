@@ -385,7 +385,7 @@ impl LintRule for Janap119Rule {
 }
 
 /// Generic data-driven reject list. Same shape as `Janap119Rule`
-/// minus the digraph columns — lets pools ship curated reject sets
+/// minus the digraph columns. Lets pools ship curated reject sets
 /// (historical cryptonyms, codenames) without core hardcoding them.
 pub struct RejectListRule {
     rule_name: &'static str,

@@ -26,7 +26,7 @@ use input_files::{merge_controls, mint_marking, pick_opt, resolve, ResolvedInput
 use ui::Ui;
 
 const CLI_BANNER: &str = "\
-NOT NICKA — official name assignment remains NICKA.
+NOT NICKA. Official name assignment remains NICKA.
 
 MERIDIAN-lexicon is an open-source local naming registry reference
 implementation. It is not an IC enterprise service or system of record.
@@ -48,7 +48,7 @@ Data dir: OSS default .meridian in cwd; highside builds require
     name = "lexicon",
     about = "Local naming registry: mint, verify, and lint un-guessable names",
     long_about = "Local naming registry: mint, verify, and lint un-guessable names.\n\n\
-NOT NICKA — official name assignment remains NICKA. Reference implementation\n\
+NOT NICKA. Official name assignment remains NICKA. Reference implementation\n\
 only; not an IC enterprise service or system of record.",
     before_help = CLI_BANNER,
     version
@@ -571,7 +571,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 };
                 // Persist the new seed only after the rotation event is on the
                 // ledger. A crash here leaves the old key active and the
-                // rotation unrecorded — recoverable, no split-brain.
+                // rotation unrecorded, but recoverable, no split-brain.
                 new.save(&keys_dir(&data_dir))?;
                 if ui.is_json() {
                     ui.json(&serde_json::json!({

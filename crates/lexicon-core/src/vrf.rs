@@ -1,11 +1,11 @@
 //! ECVRF-EDWARDS25519-SHA512-TAI (RFC 9381 §5.5, suite 0x03).
 //!
-//! NSA-approved under CNSS Policy 15 / SC-13(2). Not FIPS-validated —
+//! NSA-approved under CNSS Policy 15 / SC-13(2). Not FIPS-validated:
 //! no FIPS 140-3 module implements ECVRF. The accreditor accepts this
 //! in the SSPP; `--approved-mode` still names this suite on STATUS.
 //!
 //! TAI encode-to-curve timing depends on `alpha`. Our alpha is
-//! (authority, type, pool, seq, nonce) — not a secret identity.
+//! (authority, type, pool, seq, nonce), not a secret identity.
 
 use crate::error::{Error, Result};
 use curve25519_dalek::edwards::{CompressedEdwardsY, EdwardsPoint};
@@ -78,7 +78,7 @@ pub trait VrfSigner {
 
 /// Local-socket HSM proxy. Seed stays in the proxy; this process never sees it.
 ///
-/// Methods `todo!()` — the type is the seam RFC §3.1 needs.
+/// Methods `todo!()`: the type is the seam RFC §3.1 needs.
 #[cfg(feature = "hsm")]
 pub struct RemoteVrfSigner {
     socket_path: std::path::PathBuf,

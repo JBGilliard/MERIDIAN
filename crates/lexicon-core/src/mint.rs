@@ -23,7 +23,7 @@ pub struct MintRequest {
     /// Pin a cryptonym digraph instead of VRF-picking from the agency allocation.
     pub digraph: Option<String>,
     /// Classification marking bound to the issued name (signed + hashed).
-    /// Ignored for program-bound codeword/cryptonym — those derive from the program.
+    /// Ignored for program-bound codeword/cryptonym: those derive from the program.
     pub marking: Marking,
     pub attribution: crate::attribution::Attribution,
     pub program_pid: Option<String>,
@@ -430,7 +430,7 @@ fn require_binding(ledger: &Ledger, pid: &str, cid: Option<&str>) -> Result<()> 
 }
 
 /// Verify name was fairly minted: VRF proof, indices, pool words.
-/// Does not check ledger inclusion — use `verify_issued` for that.
+/// Does not check ledger inclusion. Use `verify_issued` for that.
 pub fn verify_mint(minted: &MintedName, pools: &PoolSet) -> Result<()> {
     let pk_raw =
         hex::decode(&minted.authority_pk).map_err(|e| Error::Parse(format!("pk hex: {e}")))?;

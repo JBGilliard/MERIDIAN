@@ -1,7 +1,7 @@
 //! SAP Program object model.
 //!
 //! Names bind to a Program (and optional Compartment). Markings are derived
-//! at read time from current program+compartment controls — never stored for
+//! at read time from current program+compartment controls, never stored for
 //! program-bound names. A `ProgramControlsChanged` event re-derives retroactively;
 //! the event log is the audit trail.
 

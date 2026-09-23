@@ -81,7 +81,7 @@ pub enum EventKind {
         indices: Vec<u32>,
         #[serde(default)]
         marking: crate::marking::Marking,
-        /// Names-index only. Not in `canonical_bytes` — Issued hashes stay stable.
+        /// Names-index only. Not in `canonical_bytes`: Issued hashes stay stable.
         #[serde(default)]
         program_pid: Option<String>,
         #[serde(default)]

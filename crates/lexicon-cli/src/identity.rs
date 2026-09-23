@@ -1,4 +1,4 @@
-//! OS-session user claim. Not an attestation — PIV/CAC is the HSM profile.
+//! OS-session user claim. Not an attestation: PIV/CAC is the HSM profile.
 //!
 //! Collection is off unless `collect` is set (policy.allow_attribution after
 //! argv tighten). Production builds never honor LEXICON_USER / LEXICON_HOST.
@@ -35,7 +35,7 @@ fn pick_field(allow_env: bool, env: Option<String>, os: Option<String>) -> Optio
 }
 
 fn whoami() -> Option<String> {
-    // Absolute path first — a PATH `whoami` is a forgery.
+    // Absolute path first: a PATH `whoami` is a forgery.
     cmd_stdout(&["/usr/bin/whoami", "/bin/whoami"], &[])
 }
 

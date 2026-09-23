@@ -70,13 +70,13 @@ cp .cargo/config.toml.example .cargo/config.toml
 cargo build --locked --offline --release -p lexicon-cli
 ```
 
-Compare the rebuilt binary hash to `SHA256SUMS`. A mismatch means different linker flags, target triple, or tampering — investigate before accrediting.
+Compare the rebuilt binary hash to `SHA256SUMS`. A mismatch means different linker flags, target triple, or tampering. Investigate before accrediting.
 
 ## What evaluators should test
 
 1. `lexicon ledger verify` on a fresh data dir (names-only OSS path).
-2. `lexicon mint --seed <hex>` — must print candidates and **not** create SQLite files.
-3. `lexicon ledger export` — names JSONL only by default; bindings require policy + `--bindings`.
+2. `lexicon mint --seed <hex>`: must print candidates and **not** create SQLite files.
+3. `lexicon ledger export`: names JSONL only by default; bindings require policy + `--bindings`.
 4. Default build must not write attribution without `--include-attribution` and policy.
 5. FIPS path: `lexicon --approved-mode ledger verify` with `--features fips` binary.
 

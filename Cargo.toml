@@ -27,7 +27,7 @@ hex = "0.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 clap = { version = "4.5", features = ["derive"] }
 zeroize = { version = "1", features = ["zeroize_derive"] }
-time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+time = { version = "=0.3.45", features = ["formatting", "parsing", "serde"] }
 
 [profile.release]
 panic = "abort"

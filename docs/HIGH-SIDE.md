@@ -38,7 +38,7 @@ cargo build --release -p lexicon-cli --features highside,fips
 ./target/release/lexicon --approved-mode --data-dir /path/to/data ledger verify
 ```
 
-CI compiles `highside` on every PR. Full `highside,fips` release binaries are produced on an air-gapped or controlled builder documented in the intro package workflow — not on public GitHub runners.
+CI compiles `highside` on every PR. Full `highside,fips` release binaries are produced on an air-gapped or controlled builder documented in the intro package workflow, not on public GitHub runners.
 
 ## Data directory
 
@@ -54,7 +54,7 @@ lexicon --data-dir /var/lexicon/keytab mint --type nickname --agency DIA
 
 Policy is the fail-closed gate for classified persistence, attribution, and export. Argv can only **tighten** policy; it cannot relax it.
 
-Example (accredited site — adjust to your AO's SSPP):
+Example (accredited site, adjust to your AO's SSPP):
 
 ```toml
 classification_floor = "S"
@@ -100,7 +100,7 @@ sci = ["TK"]
 dissem = ["NOFORN"]
 ```
 
-Precedence for the floor marking: binding file, then marking file, then `--classification`. Argv control flags (`--sci`, `--dissem`, `--aea`, `--fgi`) override the binding file's `[controls]` when both are set. Parse errors do not echo the CAPCO string, program ID, or compartment ID. Prefer `--marking-file`/`--binding-file` over `--classification` on the high side — `--classification` is argv-audited and the CLI warns when it is used.
+Precedence for the floor marking: binding file, then marking file, then `--classification`. Argv control flags (`--sci`, `--dissem`, `--aea`, `--fgi`) override the binding file's `[controls]` when both are set. Parse errors do not echo the CAPCO string, program ID, or compartment ID. Prefer `--marking-file`/`--binding-file` over `--classification` on the high side. `--classification` is argv-audited and the CLI warns when it is used.
 
 ## Export defaults
 

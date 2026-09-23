@@ -6,7 +6,7 @@ MERIDIAN is Rust + crates.io dependencies + a bundled SQLite (via `rusqlite` `bu
 
 | File | Role |
 |------|------|
-| `deny.toml` | `cargo deny check` — licenses, advisories, duplicate crates, source allowlist |
+| `deny.toml` | `cargo deny check`: licenses, advisories, duplicate crates, source allowlist |
 | `Cargo.lock` | Locked dependency graph; required for `--locked` / vendor / intro package |
 | `rust-toolchain.toml` | Pinned `rustc` 1.85.0, `profile = default` |
 | `.cargo/config.toml.example` | Vendored-sources replace for air-gap (`../vendor`) |
@@ -21,7 +21,7 @@ cargo deny check
 `deny.toml` configuration:
 
 - **Advisories:** yanked crates denied; known vulnerabilities fail the check. Unmaintained crates warn (scripts pass `-W unmaintained` where supported).
-- **Licenses:** allow-list only — MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib, CC0-1.0, NCSA, OpenSSL. Confidence threshold 0.93.
+- **Licenses:** allow-list only: MIT, Apache-2.0, BSD-2/3, ISC, Unicode-3.0, Zlib, CC0-1.0, NCSA, OpenSSL. Confidence threshold 0.93.
 - **Bans:** duplicate versions warn (investigate, don't blindly allow).
 - **Sources:** `crates.io` only. Unknown registries and git dependencies denied.
 
@@ -34,7 +34,7 @@ Intro package build embeds `deny-report.txt` via `scripts/release-sign.sh`.
 ./scripts/vendor.sh --tarball # also dist/vendor.tar.gz
 ```
 
-Air-gap sites copy `.cargo/config.toml.example` → `.cargo/config.toml` and build with `cargo build --locked --offline`. Do not commit `.cargo/config.toml` — networked CI must keep fetching from crates.io.
+Air-gap sites copy `.cargo/config.toml.example` → `.cargo/config.toml` and build with `cargo build --locked --offline`. Do not commit `.cargo/config.toml`. Networked CI must keep fetching from crates.io.
 
 ## SBOM
 
